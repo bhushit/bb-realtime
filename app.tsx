@@ -24,7 +24,7 @@ import { SessionsPanel } from "./sessions-panel";
 import { cn } from "@/lib/utils";
 import "./app.css";
 
-type VoiceState = "idle" | "connecting" | "live";
+type VoiceState = "idle" | "connecting" | "live" | "muted";
 
 interface RpcClient {
   call: ReturnType<typeof useRpc<typeof rpcContract>>["call"];
@@ -111,12 +111,27 @@ class VoiceAgent {
     else this.stop();
   }
 
+
   /** Fire-and-forget transcript logging; must never affect the call. */
   private log(kind: string, payload: Record<string, unknown> = {}) {
     const sessionId = this.nonce;
     const bindings = this.bindings;
     if (!sessionId || !bindings) return;
     void bindings.rpc.call("logEvent", { sessionId, kind, payload }).catch(() => undefined);
+  }
+
+  /** Mute = mic track sends silence; the call and playback stay up. */
+  setMuted(muted: boolean) {
+    const session = this.session;
+    if (!session || (this.state !== "live" && this.state !== "muted")) return;
+    for (const track of session.stream.getAudioTracks()) track.enabled = !muted;
+    this.log(muted ? "muted" : "unmuted");
+    this.userSpeaking = false; // a muted mic can't be mid-utterance
+    this.setState(muted ? "muted" : "live");
+  }
+
+  toggleMute() {
+    this.setMuted(this.state !== "muted");
   }
 
   /** Queue a thread event; announced as one digest when the session is quiet. */
@@ -404,6 +419,17 @@ function WaveformIcon({ live }: { live: boolean }) {
   );
 }
 
+function MicIcon({ slashed }: { slashed: boolean }) {
+  return (
+    <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
+      <rect x="6" y="1.8" width="4" height="7" rx="2" fill="currentColor" stroke="none" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" />
+      <path d="M8 12v2.2" />
+      {slashed ? <path d="M2.5 2.5l11 11" strokeWidth="1.6" /> : null}
+    </svg>
+  );
+}
+
 function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
@@ -415,6 +441,12 @@ function AideVoiceButton() {
   useRealtime("voice-call", (payload) => {
     const nonce = (payload as { nonce?: unknown } | null)?.nonce;
     if (typeof nonce === "string") voiceAgent.onCallStarted(nonce);
+  });
+
+  // CLI mute control: bb realtime mute|unmute broadcasts on this channel.
+  useRealtime("voice-mute", (payload) => {
+    const muted = (payload as { muted?: unknown } | null)?.muted;
+    if (typeof muted === "boolean") voiceAgent.setMuted(muted);
   });
 
   // Thread-event notifications (digested; disabled via `notifications` setting).
@@ -445,22 +477,42 @@ function AideVoiceButton() {
   }, [rpc, composer, threadId, projectId, sidebarActions]);
 
   const live = state === "live";
+  const muted = state === "muted";
   return (
-    <button
-      type="button"
-      aria-label={live ? "Stop Aide voice agent" : "Start Aide voice agent"}
-      title={live ? "Stop Aide" : "Talk to Aide"}
-      onClick={() => voiceAgent.toggle()}
-      className={cn(
-        "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
-        state === "idle" &&
-          "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-        state === "connecting" && "animate-pulse border-primary/50 text-primary",
-        live && "border-primary bg-primary/15 text-primary",
-      )}
-    >
-      <WaveformIcon live={live} />
-    </button>
+    <>
+      {live || muted ? (
+        <button
+          type="button"
+          aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
+          title={muted ? "Unmute" : "Mute"}
+          onClick={() => voiceAgent.toggleMute()}
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+            muted
+              ? "border-destructive bg-destructive/15 text-destructive"
+              : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+        >
+          <MicIcon slashed={muted} />
+        </button>
+      ) : null}
+      <button
+        type="button"
+        aria-label={live || muted ? "Stop Aide voice agent" : "Start Aide voice agent"}
+        title={live || muted ? "Stop Aide" : "Talk to Aide"}
+        onClick={() => voiceAgent.toggle()}
+        className={cn(
+          "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+          state === "idle" &&
+            "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+          state === "connecting" && "animate-pulse border-primary/50 text-primary",
+          live && "border-primary bg-primary/15 text-primary",
+          muted && "border-primary/40 bg-primary/5 text-primary/60",
+        )}
+      >
+        <WaveformIcon live={live} />
+      </button>
+    </>
   );
 }
 
@@ -468,6 +520,14 @@ function AideVoiceButton() {
 function SidebarLiveIndicator() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   if (state === "idle") return null;
+  if (state === "muted") {
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-destructive">
+        <span className="size-2 rounded-full bg-destructive/70" />
+        muted
+      </span>
+    );
+  }
   return (
     <span className="flex items-center gap-1.5 text-xs text-primary">
       <span

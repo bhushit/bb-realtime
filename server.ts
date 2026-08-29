@@ -493,6 +493,8 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb realtime read <thread-id>" },
       { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb realtime usage [--days N] [--json]" },
       { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb realtime stop" },
+      { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb realtime mute" },
+      { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb realtime unmute" },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
@@ -504,10 +506,15 @@ export default async function plugin(bb: BbPluginApi) {
         "  bb realtime read <thread-id>         thread status + latest assistant output",
         "  bb realtime usage [--days N] [--json] voice-session tokens and estimated cost",
         "  bb realtime stop                     stop any active voice session",
+        "  bb realtime mute | unmute            mute/unmute the active session's mic",
       ].join("\n");
       try {
         if (command === undefined || command === "help" || command === "--help" || command === "-h") {
           return { exitCode: 0, stdout: help };
+        }
+        if (command === "mute" || command === "unmute") {
+          bb.realtime.publish("voice-mute", { muted: command === "mute" });
+          return { exitCode: 0, stdout: `${command === "mute" ? "Mute" : "Unmute"} signal broadcast.` };
         }
         if (command === "stop") {
           // Every mounted voice button listens on this channel and stops any
