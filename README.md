@@ -57,6 +57,7 @@ and for your coding agents:
 bb aide live            # who's running right now
 bb aide live --json     # machine-readable
 bb aide read thr_xxxxx  # a thread's status + latest assistant output
+bb aide usage           # what your voice sessions cost, per day (estimated)
 ```
 
 Agents discover these commands automatically through bb's plugin-commands
