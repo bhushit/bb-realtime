@@ -2,11 +2,12 @@
 // version of CodeAide's HTML session log. Lists sessions with cost, and shows
 // a live-updating transcript: what you said, what Aide said, every tool call
 // with arguments and result, and errors.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { DEFAULT_MODEL, MODEL_OPTIONS, type RealtimeModel } from "./models";
+import { voiceAgent } from "./voice-agent";
 import { cn } from "@/lib/utils";
 
 interface SessionRow {
@@ -85,6 +86,44 @@ function ModelPicker() {
         ))}
       </select>
     </label>
+  );
+}
+
+/** Live session controls: state, mute/unmute, stop — right on the page. */
+function SessionControls() {
+  const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  if (state === "idle") {
+    return <span className="text-xs text-muted-foreground">No active session</span>;
+  }
+  const muted = state === "muted";
+  return (
+    <span className="flex items-center gap-2">
+      <span className={cn("flex items-center gap-1.5 text-xs", muted ? "text-destructive" : "text-primary")}>
+        <span className={cn("size-2 rounded-full", muted ? "bg-destructive/70" : "animate-pulse bg-primary")} />
+        {state}
+      </span>
+      {state !== "connecting" ? (
+        <button
+          type="button"
+          onClick={() => voiceAgent.toggleMute()}
+          className={cn(
+            "rounded-md border px-2 py-0.5 text-xs",
+            muted
+              ? "border-destructive text-destructive"
+              : "border-border text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {muted ? "Unmute" : "Mute"}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => voiceAgent.stop()}
+        className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+      >
+        Stop
+      </button>
+    </span>
   );
 }
 
@@ -361,7 +400,10 @@ export function SessionsPanel() {
           <>
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">Aide Voice Session Transcripts</p>
-              <ModelPicker />
+              <span className="flex items-center gap-4">
+                <SessionControls />
+                <ModelPicker />
+              </span>
             </div>
             <PromptEditor />
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
