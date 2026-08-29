@@ -186,8 +186,7 @@ export function SessionsPanel() {
         ) : (
           <>
             <p className="text-sm text-muted-foreground">
-              Voice sessions, newest first. Click one for the full transcript — speech, tool calls, results,
-              and errors — updating live while a call is running.
+              Aide Voice Session Transcripts
             </p>
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
               {sessions === null ? (
