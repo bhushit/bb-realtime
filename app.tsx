@@ -83,6 +83,12 @@ class VoiceAgent {
   private responseActive = false;
   /** A response.create is owed once the active response finishes. */
   private responsePending = false;
+  // ---- thread-event notifications (see server: `notifications` setting) ----
+  /** Pending thread events, deduped per thread; latest state wins. */
+  private pendingNotices = new Map<string, { kind: string; title: string }>();
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True between VAD speech_started and speech_stopped. */
+  private userSpeaking = false;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -111,6 +117,58 @@ class VoiceAgent {
     const bindings = this.bindings;
     if (!sessionId || !bindings) return;
     void bindings.rpc.call("logEvent", { sessionId, kind, payload }).catch(() => undefined);
+  }
+
+  /** Queue a thread event; announced as one digest when the session is quiet. */
+  enqueueThreadEvent(event: { kind: string; threadId: string; title: string }) {
+    if (!this.session) return; // only the window that owns the call announces
+    this.pendingNotices.set(event.threadId, { kind: event.kind, title: event.title });
+    this.scheduleNoticeDrain();
+  }
+
+  /** Debounce so simultaneous finishers coalesce into one announcement. */
+  private scheduleNoticeDrain(delayMs = 2000) {
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => {
+      this.noticeTimer = null;
+      this.drainNotices();
+    }, delayMs);
+  }
+
+  private drainNotices() {
+    const dc = this.session?.dc;
+    if (!dc || dc.readyState !== "open" || this.pendingNotices.size === 0) return;
+    // Never interrupt: wait for the user and the model to both go quiet.
+    if (this.userSpeaking || this.responseActive) return; // retried on quiet
+    const entries = [...this.pendingNotices.values()];
+    this.pendingNotices.clear();
+    const failed = entries.filter((entry) => entry.kind === "failed");
+    const finished = entries.filter((entry) => entry.kind !== "failed");
+    const parts = [
+      ...(failed.length > 0 ? [`failed: ${failed.map((entry) => entry.title).join(", ")}`] : []),
+      ...(finished.length > 0 ? [`finished: ${finished.map((entry) => entry.title).join(", ")}`] : []),
+    ];
+    const text =
+      entries.length > 5
+        ? `${entries.length} threads changed state (${failed.length} failed). Offer the user the list.`
+        : `Thread update — ${parts.join("; ")}.`;
+    this.log("notice", { text });
+    dc.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `[bb update] ${text} Tell the user in ONE short sentence. They can ask for details.`,
+            },
+          ],
+        },
+      }),
+    );
+    this.requestResponse(dc);
   }
 
   /** Another window (or this one) started a call: only the newest survives. */
@@ -145,6 +203,10 @@ class VoiceAgent {
     this.toolChain = Promise.resolve();
     this.responseActive = false;
     this.responsePending = false;
+    this.pendingNotices.clear();
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = null;
+    this.userSpeaking = false;
     if (session) {
       session.dc?.close();
       session.pc.close();
@@ -260,6 +322,11 @@ class VoiceAgent {
         const type = String(event.type ?? "");
         if (type === "response.created") {
           this.responseActive = true;
+        } else if (type === "input_audio_buffer.speech_started") {
+          this.userSpeaking = true;
+        } else if (type === "input_audio_buffer.speech_stopped") {
+          this.userSpeaking = false;
+          if (this.pendingNotices.size > 0) this.scheduleNoticeDrain();
         } else if (type === "response.function_call_arguments.done") {
           this.toolChain = this.toolChain
             .then(() => this.handleToolCall(dc, event))
@@ -278,6 +345,8 @@ class VoiceAgent {
           if (this.responsePending) {
             this.responsePending = false;
             this.requestResponse(dc);
+          } else if (this.pendingNotices.size > 0) {
+            this.scheduleNoticeDrain(1000);
           }
           const response = event.response as Record<string, unknown> | undefined;
           const usage = response?.usage;
@@ -346,6 +415,14 @@ function AideVoiceButton() {
   useRealtime("voice-call", (payload) => {
     const nonce = (payload as { nonce?: unknown } | null)?.nonce;
     if (typeof nonce === "string") voiceAgent.onCallStarted(nonce);
+  });
+
+  // Thread-event notifications (digested; disabled via `notifications` setting).
+  useRealtime("aide-thread-event", (payload) => {
+    const event = payload as { kind?: unknown; threadId?: unknown; title?: unknown } | null;
+    if (typeof event?.kind === "string" && typeof event.threadId === "string" && typeof event.title === "string") {
+      voiceAgent.enqueueThreadEvent({ kind: event.kind, threadId: event.threadId, title: event.title });
+    }
   });
 
   // Keep the singleton pointed at the freshest surface: after navigation the

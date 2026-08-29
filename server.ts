@@ -245,6 +245,32 @@ export default async function plugin(bb: BbPluginApi) {
       default: DEFAULT_MODEL,
     },
     voice: { type: "string", label: "Voice", default: "marin" },
+    notifications: {
+      type: "boolean",
+      label: "Announce thread events in voice sessions",
+      default: true,
+    },
+  });
+
+  // ---- thread-event notifications (feature-flagged by `notifications`) ----
+  // Voice sessions get told when agent threads finish or fail. The frontend
+  // queues and digests these (never interrupting speech or an active
+  // response); this side only decides WHETHER to publish.
+  async function publishThreadEvent(kind: "idle" | "failed", thread: { id: string; title: string | null; visibility: string }, detail: string | null) {
+    const { notifications } = await settings.get();
+    if (!notifications || thread.visibility === "hidden") return;
+    bb.realtime.publish("aide-thread-event", {
+      kind,
+      threadId: thread.id,
+      title: thread.title ?? "(untitled thread)",
+      detail: detail ? detail.slice(0, 200) : null,
+    });
+  }
+  bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
+    void publishThreadEvent("idle", thread, lastAssistantText);
+  });
+  bb.events.on("thread.failed", ({ thread, error }) => {
+    void publishThreadEvent("failed", thread, error);
   });
 
   async function apiKey(): Promise<string> {

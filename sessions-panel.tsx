@@ -265,6 +265,13 @@ function EventLine({ event }: { event: EventRow }) {
         </div>
       );
     }
+    case "notice":
+      return (
+        <div className="flex gap-3 py-1.5">
+          {time}
+          <span className="text-sm italic text-muted-foreground">🔔 {String(payload.text ?? "")}</span>
+        </div>
+      );
     case "error":
       return (
         <div className="flex gap-3 py-1.5">
