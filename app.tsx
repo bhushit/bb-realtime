@@ -1,4 +1,4 @@
-// bb-plugin-aide — frontend: a voice-agent toggle in the composer.
+// bb-plugin-realtime — frontend: a voice-agent toggle in the composer.
 //
 // A circular waveform button rendered beside the native mic/submit controls.
 // Clicking it opens a WebRTC session with the OpenAI Realtime API (mic capture
@@ -411,7 +411,7 @@ export default definePluginApp((app) => {
   });
   app.slots.navPanel({
     id: "sessions",
-    title: "Aide",
+    title: "Realtime",
     icon: "AudioLines",
     path: "sessions",
     component: SessionsPanel,

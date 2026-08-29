@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-aide",
+  "name": "bb-plugin-realtime",
   "version": "0.1.0",
   "type": "module",
   "engines": {
@@ -7,7 +7,7 @@
     "bbPluginSdk": ">=0.4.21"
   },
   "bb": {
-    "name": "Aide",
+    "name": "Realtime",
     "description": "Realtime voice operator for bb: talk to an agent that focuses threads, sends messages, starts work, and shows diffs.",
     "branding": {
       "icon": "AudioLines"

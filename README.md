@@ -1,6 +1,6 @@
-# Aide 🎙️
+# Realtime 🎙️
 
-**Talk to bb.** Aide adds a voice agent to [bb](https://getbb.app): click
+**Talk to bb.** Realtime adds a voice agent to [bb](https://getbb.app): click
 the little waveform button in the composer, start talking, and an assistant
 with real control over bb does the work — finds threads, puts them on screen,
 messages your coding agents, kicks off new work, and reads results back to
@@ -14,7 +14,7 @@ you.
    cd bb-aide
    npm install
    bb plugin install . --yes
-   bb plugin config aide set openaiApiKey <your-openai-key>
+   bb plugin config realtime set openaiApiKey <your-openai-key>
    bb plugin reload aide
    ```
 
@@ -54,10 +54,10 @@ The same "Live threads" view from the sidebar is available as a CLI, for you
 and for your coding agents:
 
 ```sh
-bb aide live            # who's running right now
-bb aide live --json     # machine-readable
-bb aide read thr_xxxxx  # a thread's status + latest assistant output
-bb aide usage           # what your voice sessions cost, per day (estimated)
+bb realtime live            # who's running right now
+bb realtime live --json     # machine-readable
+bb realtime read thr_xxxxx  # a thread's status + latest assistant output
+bb realtime usage           # what your voice sessions cost, per day (estimated)
 ```
 
 Agents discover these commands automatically through bb's plugin-commands
@@ -71,7 +71,7 @@ skill.
 | `model` | `gpt-realtime-2` | OpenAI Realtime model |
 | `voice` | `marin` | Assistant voice |
 
-Change with `bb plugin config aide set <key> <value>`, then
+Change with `bb plugin config realtime set <key> <value>`, then
 `bb plugin reload aide`.
 
 ## Troubleshooting
@@ -100,7 +100,7 @@ data channel) with no native helper — unlike its VS Code sibling
 app.tsx    composer button + WebRTC session; composer-draft tools run locally
 app.css    waveform animation
 server.ts  API key + SDP exchange (api.openai.com/v1/realtime/calls),
-           bb tools via bb.sdk, `bb aide` CLI
+           bb tools via bb.sdk, `bb realtime` CLI
 ```
 
 Tool-call flow: model → data channel → `app.tsx` → plugin RPC `runTool` →

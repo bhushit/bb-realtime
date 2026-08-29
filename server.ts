@@ -1,4 +1,4 @@
-// bb-plugin-aide — Aide: a realtime voice operator for bb.
+// bb-plugin-realtime — Aide: a realtime voice operator for bb.
 //
 // The frontend (app.tsx) captures mic audio over WebRTC directly in the bb
 // app; this backend holds the OpenAI API key, performs the SDP exchange with
@@ -214,7 +214,7 @@ export default async function plugin(bb: BbPluginApi) {
     const { openaiApiKey } = await settings.get();
     const key = openaiApiKey || process.env.OPENAI_API_KEY;
     if (!key) {
-      throw new Error("No OpenAI API key. Set it with: bb plugin config aide set openaiApiKey <key>");
+      throw new Error("No OpenAI API key. Set it with: bb plugin config realtime set openaiApiKey <key>");
     }
     return key;
   }
@@ -222,7 +222,7 @@ export default async function plugin(bb: BbPluginApi) {
   {
     const { openaiApiKey } = await settings.get();
     if (!openaiApiKey && !process.env.OPENAI_API_KEY) {
-      bb.status.needsConfiguration("Set openaiApiKey with `bb plugin config aide set openaiApiKey <key>`, then reload.");
+      bb.status.needsConfiguration("Set openaiApiKey with `bb plugin config realtime set openaiApiKey <key>`, then reload.");
     }
   }
 
@@ -399,24 +399,24 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.cli.register({
-    name: "aide",
-    summary: "Aide: inspect live (running) bb threads",
+    name: "realtime",
+    summary: "Realtime voice plugin: inspect live threads and voice sessions",
     commands: [
-      { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb aide live [--json]" },
-      { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb aide read <thread-id>" },
-      { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb aide usage [--days N] [--json]" },
-      { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb aide stop" },
+      { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb realtime live [--json]" },
+      { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb realtime read <thread-id>" },
+      { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb realtime usage [--days N] [--json]" },
+      { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb realtime stop" },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
       const help = [
-        "Aide \u2014 voice operator for bb",
+        "Realtime \u2014 voice operator for bb",
         "",
         "Usage:",
-        "  bb aide live [--json]            threads that are live right now",
-        "  bb aide read <thread-id>         thread status + latest assistant output",
-        "  bb aide usage [--days N] [--json] voice-session tokens and estimated cost",
-        "  bb aide stop                     stop any active voice session",
+        "  bb realtime live [--json]            threads that are live right now",
+        "  bb realtime read <thread-id>         thread status + latest assistant output",
+        "  bb realtime usage [--days N] [--json] voice-session tokens and estimated cost",
+        "  bb realtime stop                     stop any active voice session",
       ].join("\n");
       try {
         if (command === undefined || command === "help" || command === "--help" || command === "-h") {
@@ -441,7 +441,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (command === "read") {
           const threadId = rest.find((arg) => !arg.startsWith("-"));
-          if (!threadId) return { exitCode: 1, stderr: "Usage: bb aide read <thread-id>" };
+          if (!threadId) return { exitCode: 1, stderr: "Usage: bb realtime read <thread-id>" };
           const thread = await bb.sdk.threads.get({ threadId });
           const { output } = await bb.sdk.threads.output({ threadId });
           const t = thread as { title?: string | null; status?: string };
