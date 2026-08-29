@@ -127,6 +127,76 @@ function SessionControls() {
   );
 }
 
+interface ToolInfo {
+  name: string;
+  description: string;
+  parameters: string | null;
+  local: boolean;
+}
+
+/** Compact "thread_id*, action*" summary from a JSON-schema parameters blob. */
+function paramSummary(parameters: string | null): string {
+  if (!parameters) return "";
+  try {
+    const schema = JSON.parse(parameters) as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    const required = new Set(schema.required ?? []);
+    const names = Object.keys(schema.properties ?? {});
+    return names.map((name) => (required.has(name) ? `${name}*` : name)).join(", ");
+  } catch {
+    return "";
+  }
+}
+
+/** View-only inventory of the voice agent's tools, fetched from the server. */
+function ToolsSection() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [tools, setTools] = useState<ToolInfo[] | null>(null);
+
+  const refetch = useCallback(() => {
+    rpc.call("getTools", null).then((result) => setTools(result.tools), () => undefined);
+  }, [rpc]);
+  useEffect(refetch, [refetch]);
+
+  return (
+    <details className="rounded-lg border border-border bg-card">
+      <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-foreground">
+        Tools
+        <span className="ml-2 text-xs font-normal text-muted-foreground">
+          {tools ? `${tools.length} available to the agent · view-only` : "\u2026"}
+        </span>
+      </summary>
+      <div className="divide-y divide-border/50 border-t border-border/50">
+        {(tools ?? []).map((tool) => {
+          const params = paramSummary(tool.parameters);
+          return (
+            <div key={tool.name} className="px-3 py-2">
+              <div className="flex items-center gap-2">
+                <code className="text-xs font-medium text-foreground">
+                  {tool.name}
+                  <span className="text-muted-foreground">({params})</span>
+                </code>
+                {tool.local ? (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    runs in app
+                  </span>
+                ) : null}
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">{tool.description}</p>
+            </div>
+          );
+        })}
+        <p className="px-3 py-2 text-[10px] text-muted-foreground">
+          * required parameter. This list is what new voice sessions receive; it updates with the
+          plugin.
+        </p>
+      </div>
+    </details>
+  );
+}
+
 interface PromptVersion {
   id: number;
   ts: number;
@@ -385,7 +455,8 @@ export function SessionsPanel() {
               </button>
               <span className="text-sm text-foreground">
                 {fmtDate(current.startedAt)} · {duration(current.startedAt, current.lastEventAt)} ·{" "}
-                {current.ended ? "ended" : "live"} · ~${current.costUsd.toFixed(4)}
+                {current.ended ? "ended" : "live"} ·{" "}
+                {current.costUsd > 0 ? `~$${current.costUsd.toFixed(4)}` : "no usage recorded"}
               </span>
             </div>
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card px-3 py-1">
@@ -406,6 +477,7 @@ export function SessionsPanel() {
               </span>
             </div>
             <PromptEditor />
+            <ToolsSection />
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
               {sessions === null ? (
                 <p className="p-3 text-sm text-muted-foreground">Loading…</p>
@@ -429,8 +501,8 @@ export function SessionsPanel() {
                     />
                     <span className="flex-1 text-sm text-foreground">{fmtDate(session.startedAt)}</span>
                     <span className="text-xs tabular-nums text-muted-foreground">
-                      {duration(session.startedAt, session.lastEventAt)} · {session.events} events · ~$
-                      {session.costUsd.toFixed(4)}
+                      {duration(session.startedAt, session.lastEventAt)} · {session.events} events ·{" "}
+                      {session.costUsd > 0 ? `~$${session.costUsd.toFixed(4)}` : "no usage"}
                     </span>
                   </button>
                 ))

@@ -4,6 +4,9 @@
 // app; this backend holds the OpenAI API key, performs the SDP exchange with
 // the OpenAI Realtime API, and executes the voice agent's tools against the
 // bb SDK (threads, projects, diffs, panes).
+import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { DEFAULT_MODEL, MODEL_OPTIONS } from "./models";
@@ -32,6 +35,26 @@ export const rpcContract = defineRpcContract({
       })
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** View-only list of the voice agent's tools (source of truth: toolSchemas). */
+  getTools: {
+    input: z.null(),
+    output: z
+      .object({
+        tools: z.array(
+          z
+            .object({
+              name: z.string(),
+              description: z.string(),
+              /** JSON-schema of parameters, serialized; null = no parameters. */
+              parameters: z.string().nullable(),
+              /** Handled locally in the bb app frontend, not via bb.sdk. */
+              local: z.boolean(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
   },
   /** Active prompt, the built-in default, and version history. */
   getPrompt: {
@@ -273,19 +296,91 @@ export default async function plugin(bb: BbPluginApi) {
     void publishThreadEvent("failed", thread, error);
   });
 
+  // ---- Codex subscription auth ----
+  // The OpenAI Realtime endpoints accept the ChatGPT-subscription OAuth
+  // access token that Codex CLI stores in ~/.codex/auth.json (its audience is
+  // literally https://api.openai.com/v1). We use it as a fallback when no API
+  // key is configured, refreshing it via the Codex OAuth client when expired.
+  const CODEX_AUTH_PATH = join(homedir(), ".codex", "auth.json");
+  const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+  function jwtExp(token: string): number {
+    try {
+      const payload = token.split(".")[1];
+      const json = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+      return typeof json.exp === "number" ? json.exp : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  async function codexToken(): Promise<string | null> {
+    let auth: { tokens?: { access_token?: string; refresh_token?: string } };
+    try {
+      auth = JSON.parse(readFileSync(CODEX_AUTH_PATH, "utf8"));
+    } catch {
+      return null;
+    }
+    const access = auth.tokens?.access_token;
+    const refresh = auth.tokens?.refresh_token;
+    if (!access) return null;
+    if (jwtExp(access) - 60 > Date.now() / 1000) return access;
+    if (!refresh) return null;
+    try {
+      const response = await fetch("https://auth.openai.com/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "refresh_token",
+          client_id: CODEX_CLIENT_ID,
+          refresh_token: refresh,
+          scope: "openid profile email",
+        }),
+      });
+      if (!response.ok) {
+        bb.log.error(`codex token refresh failed: ${response.status}`);
+        return null;
+      }
+      const fresh = (await response.json()) as { access_token?: string; refresh_token?: string; id_token?: string };
+      if (!fresh.access_token) return null;
+      // Persist back like Codex CLI does, so both tools stay in sync.
+      const updated = {
+        ...auth,
+        tokens: {
+          ...auth.tokens,
+          access_token: fresh.access_token,
+          refresh_token: fresh.refresh_token ?? refresh,
+          ...(fresh.id_token ? { id_token: fresh.id_token } : {}),
+        },
+        last_refresh: new Date().toISOString(),
+      };
+      try {
+        writeFileSync(CODEX_AUTH_PATH, JSON.stringify(updated, null, 2));
+      } catch {
+        // Read-only auth file is fine; the token still works for this session.
+      }
+      return fresh.access_token;
+    } catch (error) {
+      bb.log.error(`codex token refresh error: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
   async function apiKey(): Promise<string> {
     const { openaiApiKey } = await settings.get();
     const key = openaiApiKey || process.env.OPENAI_API_KEY;
-    if (!key) {
-      throw new Error("No OpenAI API key. Set it with: bb plugin config realtime set openaiApiKey <key>");
-    }
-    return key;
+    if (key) return key;
+    const codex = await codexToken();
+    if (codex) return codex;
+    throw new Error(
+      "No OpenAI credentials. Set an API key with `bb plugin config realtime set openaiApiKey <key>`, or sign in with `codex login` to use your ChatGPT subscription.",
+    );
   }
 
   {
     const { openaiApiKey } = await settings.get();
-    if (!openaiApiKey && !process.env.OPENAI_API_KEY) {
-      bb.status.needsConfiguration("Set openaiApiKey with `bb plugin config realtime set openaiApiKey <key>`, then reload.");
+    if (!openaiApiKey && !process.env.OPENAI_API_KEY && !(await codexToken())) {
+      bb.status.needsConfiguration("Set openaiApiKey with `bb plugin config realtime set openaiApiKey <key>`, or run `codex login`, then reload.");
     }
   }
 
@@ -617,6 +712,17 @@ export default async function plugin(bb: BbPluginApi) {
       // this and stops any session whose nonce differs.
       bb.realtime.publish("voice-call", { nonce });
       return { sdp: text };
+    },
+    async getTools() {
+      const local = new Set(["set_composer_text", "append_composer_text"]);
+      return {
+        tools: toolSchemas().map((tool) => ({
+          name: tool.name,
+          description: tool.description ?? "",
+          parameters: "parameters" in tool && tool.parameters ? JSON.stringify(tool.parameters) : null,
+          local: local.has(tool.name),
+        })),
+      };
     },
     async getPrompt() {
       const versions = db
