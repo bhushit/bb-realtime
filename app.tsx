@@ -387,6 +387,23 @@ function AideVoiceButton() {
   );
 }
 
+/** Trailing accessory on the Aide sidebar row: shows when a call is on. */
+function SidebarLiveIndicator() {
+  const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  if (state === "idle") return null;
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-primary">
+      <span
+        className={cn(
+          "size-2 rounded-full bg-primary",
+          state === "live" ? "animate-pulse" : "opacity-50",
+        )}
+      />
+      {state === "live" ? "live" : "\u2026"}
+    </span>
+  );
+}
+
 export default definePluginApp((app) => {
   app.composer.customize({
     id: "aide-voice",
@@ -398,6 +415,7 @@ export default definePluginApp((app) => {
     icon: "AudioLines",
     path: "sessions",
     component: SessionsPanel,
+    experimental_sidebarAccessory: SidebarLiveIndicator,
   });
   // The session deliberately outlives any component, so tie it to the plugin
   // frontend generation instead: on reload/disable the old bundle's singleton
