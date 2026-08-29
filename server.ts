@@ -33,6 +33,38 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  /** Active prompt, the built-in default, and version history. */
+  getPrompt: {
+    input: z.null(),
+    output: z
+      .object({
+        content: z.string(),
+        defaultContent: z.string(),
+        versions: z.array(
+          z
+            .object({
+              id: z.number(),
+              ts: z.number(),
+              source: z.string(),
+              note: z.string().nullable(),
+              content: z.string(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
+  /** Save a new prompt version (becomes active for the next session). */
+  setPrompt: {
+    input: z
+      .object({
+        content: z.string().min(1).max(20000),
+        source: z.enum(["user", "agent"]),
+        note: z.string().nullable(),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   /** Switch the realtime model used by new voice sessions. */
   setModel: {
     input: z.object({ model: z.enum(MODEL_OPTIONS) }).strict(),
@@ -153,26 +185,24 @@ function toolSchemas() {
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
     { type: "function", name: "show_diff", description: "Summarize a thread's workspace diff (changed files, additions/deletions) and focus the thread so the user can see it.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "update_instructions", description: "Amend your own standing instructions (the system prompt for future voice sessions). Pass the COMPLETE new instructions text, not a diff. Use only when the user asks for a lasting behavior change.", parameters: { type: "object", properties: { instructions: { type: "string", description: "The full replacement instructions." }, reason: { type: "string", description: "One short sentence: why, quoting the user's request." } }, required: ["instructions", "reason"] } },
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
   ];
 }
 
-function instructions(context: { threadId: string | null; projectId: string | null }): string {
-  return `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
+const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
 
 The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, and edit the user's prompt composer.
-
-Current context: threadId=${context.threadId ?? "none"}, projectId=${context.projectId ?? "none"}. Call get_context for fresh context — the user navigates while talking.
 
 Rules:
 - Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, never enumerate options, never restate the user's request. Add detail only when asked.
 - Thread ids look like thr_x… and project ids like proj_x…. When the user names a thread by topic or title, find it with list_threads or search_threads first.
 - Never invent prompts, titles, or messages on the user's behalf — send only their words. If required information is missing, ask one short question.
 - When reading agent output aloud, give a one-or-two-sentence summary; never read code or ids verbatim.
-- Prefer focus_thread so the user sees what you are talking about.`;
-}
+- Prefer focus_thread so the user sees what you are talking about.
+- When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to amend these standing instructions.`;
 
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -197,6 +227,13 @@ export default async function plugin(bb: BbPluginApi) {
       payload TEXT NOT NULL DEFAULT '{}'
     )`,
     `CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events (session_id, ts)`,
+    `CREATE TABLE IF NOT EXISTS prompt_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      note TEXT,
+      content TEXT NOT NULL
+    )`,
   ]);
 
   const settings = bb.settings.define({
@@ -264,6 +301,24 @@ export default async function plugin(bb: BbPluginApi) {
     const hours = Math.round(minutes / 60);
     if (hours < 24) return `${hours}h ago`;
     return `${Math.round(hours / 24)}d ago`;
+  }
+
+  /** The active prompt body: newest saved version, else the built-in default. */
+  function activePrompt(): string {
+    const row = db.prepare("SELECT content FROM prompt_versions ORDER BY id DESC LIMIT 1").get() as
+      | { content: string }
+      | undefined;
+    return row?.content ?? DEFAULT_PROMPT;
+  }
+
+  function savePromptVersion(content: string, source: "user" | "agent", note: string | null) {
+    db.prepare("INSERT INTO prompt_versions (ts, source, note, content) VALUES (?, ?, ?, ?)").run(
+      Date.now(),
+      source,
+      note,
+      content,
+    );
+    bb.realtime.publish("prompt-changed", {});
   }
 
   async function resolveEnvironmentId(threadId: string): Promise<string | null> {
@@ -376,6 +431,12 @@ export default async function plugin(bb: BbPluginApi) {
       case "rename_thread": {
         await bb.sdk.threads.update({ threadId: str("thread_id"), title: str("title") });
         return "Thread renamed.";
+      }
+      case "update_instructions": {
+        const content = str("instructions");
+        if (content.length > 20000) return "Error: instructions too long (max 20000 characters).";
+        savePromptVersion(content, "agent", str("reason"));
+        return "Instructions updated. They apply from the next voice session.";
       }
       case "show_diff": {
         const threadId = str("thread_id");
@@ -496,7 +557,7 @@ export default async function plugin(bb: BbPluginApi) {
       const session = {
         type: "realtime",
         model,
-        instructions: instructions({ threadId, projectId }),
+        instructions: `${activePrompt()}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}. Call get_context for fresh context — the user navigates while talking.`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -523,6 +584,16 @@ export default async function plugin(bb: BbPluginApi) {
       // this and stops any session whose nonce differs.
       bb.realtime.publish("voice-call", { nonce });
       return { sdp: text };
+    },
+    async getPrompt() {
+      const versions = db
+        .prepare("SELECT id, ts, source, note, content FROM prompt_versions ORDER BY id DESC LIMIT 50")
+        .all() as { id: number; ts: number; source: string; note: string | null; content: string }[];
+      return { content: activePrompt(), defaultContent: DEFAULT_PROMPT, versions };
+    },
+    async setPrompt({ content, source, note }) {
+      savePromptVersion(content, source, note);
+      return { ok: true as const };
     },
     async setModel({ model }) {
       await bb.sdk.plugins.updateSettings({ pluginId: bb.pluginId, values: { model } });

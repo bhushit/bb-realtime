@@ -88,6 +88,134 @@ function ModelPicker() {
   );
 }
 
+interface PromptVersion {
+  id: number;
+  ts: number;
+  source: string;
+  note: string | null;
+  content: string;
+}
+
+function PromptEditor() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [active, setActive] = useState("");
+  const [defaultContent, setDefaultContent] = useState("");
+  const [draft, setDraft] = useState<string | null>(null);
+  const [versions, setVersions] = useState<PromptVersion[]>([]);
+
+  const refetch = useCallback(() => {
+    rpc.call("getPrompt", null).then((result) => {
+      setActive(result.content);
+      setDefaultContent(result.defaultContent);
+      setVersions(result.versions);
+    }, () => undefined);
+  }, [rpc]);
+
+  useEffect(refetch, [refetch]);
+  useRealtime("prompt-changed", refetch);
+
+  const text = draft ?? active;
+  const dirty = draft !== null && draft !== active;
+
+  async function save(content: string, note: string | null) {
+    try {
+      await rpc.call("setPrompt", { content, source: "user", note });
+      setDraft(null);
+      toast.success("Prompt saved — applies to the next session");
+    } catch (cause) {
+      toast.error(`Could not save prompt: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
+
+  return (
+    <details className="rounded-lg border border-border bg-card">
+      <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-foreground">
+        Prompt
+        <span className="ml-2 text-xs font-normal text-muted-foreground">
+          {versions.length === 0 ? "built-in default" : `v${versions[0]?.id} · ${versions.length} revision(s)`}
+        </span>
+      </summary>
+      <div className="space-y-3 border-t border-border/50 p-3">
+        <textarea
+          value={text}
+          onChange={(event) => setDraft(event.target.value)}
+          rows={14}
+          spellCheck={false}
+          className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs text-foreground"
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={!dirty || text.trim().length === 0}
+            onClick={() => void save(text, "edited in Realtime page")}
+            className="rounded-md border border-border bg-primary/10 px-3 py-1 text-sm text-primary disabled:opacity-40"
+          >
+            Save
+          </button>
+          {dirty ? (
+            <button
+              type="button"
+              onClick={() => setDraft(null)}
+              className="rounded-md border border-border px-3 py-1 text-sm text-muted-foreground hover:text-foreground"
+            >
+              Discard
+            </button>
+          ) : null}
+          {active !== defaultContent ? (
+            <button
+              type="button"
+              onClick={() => void save(defaultContent, "reset to built-in default")}
+              className="ml-auto rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Reset to default
+            </button>
+          ) : null}
+        </div>
+        {versions.length > 0 ? (
+          <div className="divide-y divide-border/50 rounded-md border border-border/70">
+            {versions.map((version, index) => (
+              <div key={version.id} className="flex items-center gap-2 px-2.5 py-1.5 text-xs">
+                <span className="tabular-nums text-muted-foreground">{fmtDate(version.ts)}</span>
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0.5",
+                    version.source === "agent" ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {version.source}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                  {version.note ?? version.content.slice(0, 80)}
+                </span>
+                {index === 0 ? (
+                  <span className="text-muted-foreground">active</span>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setDraft(version.content)}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      view
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void save(version.content, `restored v${version.id}`)}
+                      className="text-primary hover:underline"
+                    >
+                      restore
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function EventLine({ event }: { event: EventRow }) {
   const payload = parsePayload(event.payload);
   const time = <span className="shrink-0 tabular-nums text-xs text-muted-foreground">{fmtTime(event.ts)}</span>;
@@ -228,6 +356,7 @@ export function SessionsPanel() {
               <p className="text-sm text-muted-foreground">Aide Voice Session Transcripts</p>
               <ModelPicker />
             </div>
+            <PromptEditor />
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
               {sessions === null ? (
                 <p className="p-3 text-sm text-muted-foreground">Loading…</p>
