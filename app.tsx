@@ -12,6 +12,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import {
   definePluginApp,
+  experimental_useSidebarThreadActions,
   useBbContext,
   useComposer,
   useRpc,
@@ -36,6 +37,7 @@ interface Bindings {
   rpc: RpcClient;
   context: { threadId: string | null; projectId: string | null };
   composer: ComposerBinding;
+  openNewThread: (projectId: string | null) => void;
 }
 
 interface SessionHandle {
@@ -127,6 +129,19 @@ class VoiceAgent {
       const text = String(args.text ?? "");
       bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
       output = "Text appended to composer.";
+    } else if (
+      name === "start_thread" &&
+      !(typeof args.prompt === "string" && args.prompt.trim())
+    ) {
+      // No dictated prompt: never fabricate one — open bb's New thread screen
+      // with the project preselected and let the user type it themselves.
+      const projectId =
+        typeof args.project_id === "string" && args.project_id
+          ? args.project_id
+          : bindings.context.projectId;
+      bindings.openNewThread(projectId);
+      output =
+        "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
     } else {
       try {
         const result = await bindings.rpc.call("runTool", {
@@ -237,6 +252,7 @@ function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const { threadId, projectId } = useBbContext();
+  const sidebarActions = experimental_useSidebarThreadActions();
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
 
   // Keep the singleton pointed at the freshest surface: after navigation the
@@ -250,8 +266,13 @@ function AideVoiceButton() {
         setText: (text) => composer.setText(text),
         updateText: (updater) => composer.updateText(updater),
       },
+      openNewThread: (targetProjectId) =>
+        sidebarActions.openNewThread({
+          ...(targetProjectId ? { projectId: targetProjectId } : {}),
+          focusPrompt: true,
+        }),
     });
-  }, [rpc, composer, threadId, projectId]);
+  }, [rpc, composer, threadId, projectId, sidebarActions]);
 
   const live = state === "live";
   return (

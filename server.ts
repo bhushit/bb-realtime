@@ -50,7 +50,7 @@ function toolSchemas() {
     { type: "function", name: "focus_thread", description: "Open/focus a thread in the user's bb app window.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
-    { type: "function", name: "start_thread", description: "Start a new agent thread in a project with an initial prompt.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string" }, title: { type: "string" } }, required: ["prompt"] } },
+    { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; NEVER invent or paraphrase a prompt. With no prompt, this opens bb's New thread screen for the user to type their own.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
@@ -69,9 +69,10 @@ The user talks to you to drive bb hands-free. You can list/search/read threads, 
 Current context: threadId=${context.threadId ?? "none"}, projectId=${context.projectId ?? "none"}. Call get_context for fresh context — the user navigates while talking.
 
 Rules:
+- Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, never enumerate options, never restate the user's request. Add detail only when asked.
 - Thread ids look like thr_x… and project ids like proj_x…. When the user names a thread by topic or title, find it with list_threads or search_threads first.
-- After acting, confirm briefly. Keep responses short — one or two sentences unless the user asks for detail.
-- When reading agent output aloud, summarize; never read code or ids verbatim.
+- Never invent prompts, titles, or messages on the user's behalf — send only their words. If required information is missing, ask one short question.
+- When reading agent output aloud, give a one-or-two-sentence summary; never read code or ids verbatim.
 - Prefer focus_thread so the user sees what you are talking about.`;
 }
 
@@ -224,10 +225,14 @@ export default async function plugin(bb: BbPluginApi) {
       case "start_thread": {
         const projectId = typeof args.project_id === "string" && args.project_id ? args.project_id : context.projectId;
         if (!projectId) return "Error: no project_id given and no current project. Ask the user or call list_projects.";
+        const prompt = typeof args.prompt === "string" && args.prompt.trim() ? args.prompt : undefined;
+        // Promptless start_thread is handled in the frontend (opens the New
+        // thread screen); reaching here without one means that path failed.
+        if (!prompt) return "No prompt given. Ask the user what the new thread should work on.";
         const thread = await bb.sdk.threads.spawn({
           projectId,
           environment: { type: "project-default" },
-          prompt: str("prompt"),
+          prompt,
           ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
         });
         await bb.sdk.threads.open({ threadId: thread.id, file: null }).catch(() => undefined);
