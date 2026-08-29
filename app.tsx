@@ -20,6 +20,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
+import { SessionsPanel } from "./sessions-panel";
 import { cn } from "@/lib/utils";
 import "./app.css";
 
@@ -98,6 +99,14 @@ class VoiceAgent {
     else this.stop();
   }
 
+  /** Fire-and-forget transcript logging; must never affect the call. */
+  private log(kind: string, payload: Record<string, unknown> = {}) {
+    const sessionId = this.nonce;
+    const bindings = this.bindings;
+    if (!sessionId || !bindings) return;
+    void bindings.rpc.call("logEvent", { sessionId, kind, payload }).catch(() => undefined);
+  }
+
   /** Another window (or this one) started a call: only the newest survives. */
   onCallStarted(nonce: string) {
     if (nonce && nonce !== this.nonce && this.state !== "idle") {
@@ -107,6 +116,7 @@ class VoiceAgent {
   }
 
   stop() {
+    if (this.session) this.log("session.stopped");
     const session = this.session;
     this.session = null;
     this.nonce = null;
@@ -130,6 +140,7 @@ class VoiceAgent {
     } catch {
       /* keep {} */
     }
+    this.log("tool.call", { name, args });
     let output: string;
     if (!bindings) {
       output = "Tool error: no bb surface is bound right now.";
@@ -165,6 +176,7 @@ class VoiceAgent {
         output = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
       }
     }
+    this.log("tool.result", { name, output: output.slice(0, 4000) });
     if (!callId || dc.readyState !== "open") return;
     dc.send(
       JSON.stringify({
@@ -181,6 +193,7 @@ class VoiceAgent {
     this.setState("connecting");
     const nonce = crypto.randomUUID();
     this.nonce = nonce;
+    this.log("session.started", { ...bindings.context });
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const pc = new RTCPeerConnection();
@@ -206,7 +219,10 @@ class VoiceAgent {
       const dc = pc.createDataChannel("oai-events");
       session.dc = dc;
       dc.onopen = () => {
-        if (this.session?.pc === pc) this.setState("live");
+        if (this.session?.pc === pc) {
+          this.setState("live");
+          this.log("session.live");
+        }
       };
       dc.onmessage = (message) => {
         let event: Record<string, unknown>;
@@ -218,6 +234,15 @@ class VoiceAgent {
         const type = String(event.type ?? "");
         if (type === "response.function_call_arguments.done") {
           void this.handleToolCall(dc, event);
+        } else if (type === "conversation.item.input_audio_transcription.completed") {
+          const text = String(event.transcript ?? "").trim();
+          if (text) this.log("user", { text });
+        } else if (
+          type === "response.output_audio_transcript.done" ||
+          type === "response.audio_transcript.done"
+        ) {
+          const text = String(event.transcript ?? "").trim();
+          if (text) this.log("assistant", { text });
         } else if (type === "response.done") {
           const response = event.response as Record<string, unknown> | undefined;
           const usage = response?.usage;
@@ -225,12 +250,14 @@ class VoiceAgent {
             void this.bindings?.rpc
               .call("recordUsage", {
                 model: typeof response?.model === "string" ? response.model : null,
+                sessionId: this.nonce,
                 usage: usage as Record<string, unknown>,
               })
               .catch(() => undefined); // cost tracking must never break the call
           }
         } else if (type === "error") {
           const detail = (event.error as { message?: string } | undefined)?.message;
+          this.log("error", { message: detail ?? "realtime error" });
           toast.error(`BB Aide: ${detail ?? "realtime error"}`);
         }
       };
@@ -329,6 +356,13 @@ export default definePluginApp((app) => {
   app.composer.customize({
     id: "aide-voice",
     actions: [{ id: "voice-agent", component: AideVoiceButton }],
+  });
+  app.slots.navPanel({
+    id: "sessions",
+    title: "BB Aide",
+    icon: "AudioLines",
+    path: "sessions",
+    component: SessionsPanel,
   });
   // The session deliberately outlives any component, so tie it to the plugin
   // frontend generation instead: on reload/disable the old bundle's singleton

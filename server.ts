@@ -26,10 +26,55 @@ export const rpcContract = defineRpcContract({
     input: z
       .object({
         model: z.string().nullable(),
+        sessionId: z.string().nullable(),
         usage: z.record(z.string(), z.unknown()),
       })
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** Append one event to a voice session's transcript log. */
+  logEvent: {
+    input: z
+      .object({
+        sessionId: z.string().min(1),
+        kind: z.string().min(1),
+        payload: z.record(z.string(), z.unknown()),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** List voice sessions, newest first, with counts and estimated cost. */
+  listSessions: {
+    input: z.null(),
+    output: z
+      .object({
+        sessions: z.array(
+          z
+            .object({
+              id: z.string(),
+              startedAt: z.number(),
+              lastEventAt: z.number(),
+              events: z.number(),
+              ended: z.boolean(),
+              costUsd: z.number(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
+  /** Full event log for one session, oldest first. */
+  getSessionEvents: {
+    input: z.object({ sessionId: z.string().min(1) }).strict(),
+    output: z
+      .object({
+        events: z.array(
+          z
+            .object({ id: z.number(), ts: z.number(), kind: z.string(), payload: z.string() })
+            .strict(),
+        ),
+      })
+      .strict(),
   },
   /** Run one realtime tool call against the bb SDK. Always returns text. */
   runTool: {
@@ -137,6 +182,15 @@ export default async function plugin(bb: BbPluginApi) {
       output_text INTEGER NOT NULL DEFAULT 0,
       output_audio INTEGER NOT NULL DEFAULT 0
     )`,
+    `ALTER TABLE usage_events ADD COLUMN session_id TEXT`,
+    `CREATE TABLE IF NOT EXISTS session_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}'
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events (session_id, ts)`,
   ]);
 
   const settings = bb.settings.define({
@@ -459,18 +513,54 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("voice-call", { nonce });
       return { sdp: text };
     },
-    async recordUsage({ model, usage }) {
+    async logEvent({ sessionId, kind, payload }) {
+      db.prepare(
+        "INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)",
+      ).run(sessionId, Date.now(), kind, JSON.stringify(payload));
+      bb.realtime.publish("aide-log", { sessionId });
+      return { ok: true as const };
+    },
+    async listSessions() {
+      const rows = db
+        .prepare(
+          `SELECT session_id AS id, MIN(ts) AS startedAt, MAX(ts) AS lastEventAt, COUNT(*) AS events,
+                  SUM(CASE WHEN kind = 'session.stopped' THEN 1 ELSE 0 END) AS stopped
+           FROM session_events GROUP BY session_id ORDER BY startedAt DESC LIMIT 100`,
+        )
+        .all() as { id: string; startedAt: number; lastEventAt: number; events: number; stopped: number }[];
+      const costStmt = db.prepare("SELECT * FROM usage_events WHERE session_id = ?");
+      return {
+        sessions: rows.map((row) => ({
+          id: row.id,
+          startedAt: row.startedAt,
+          lastEventAt: row.lastEventAt,
+          events: row.events,
+          ended: row.stopped > 0,
+          costUsd: Number(
+            (costStmt.all(row.id) as UsageRow[]).reduce((sum, usage) => sum + costUsd(usage), 0).toFixed(4),
+          ),
+        })),
+      };
+    },
+    async getSessionEvents({ sessionId }) {
+      const events = db
+        .prepare("SELECT id, ts, kind, payload FROM session_events WHERE session_id = ? ORDER BY ts, id")
+        .all(sessionId) as { id: number; ts: number; kind: string; payload: string }[];
+      return { events };
+    },
+    async recordUsage({ model, sessionId, usage }) {
       const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
       const inDetails = (usage.input_token_details ?? {}) as Record<string, unknown>;
       const outDetails = (usage.output_token_details ?? {}) as Record<string, unknown>;
       const cachedDetails = (inDetails.cached_tokens_details ?? {}) as Record<string, unknown>;
       const { model: configuredModel } = await settings.get();
       db.prepare(
-        `INSERT INTO usage_events (ts, model, input_text, input_audio, cached_text, cached_audio, output_text, output_audio)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO usage_events (ts, model, session_id, input_text, input_audio, cached_text, cached_audio, output_text, output_audio)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         Date.now(),
         model ?? configuredModel,
+        sessionId,
         num(inDetails.text_tokens),
         num(inDetails.audio_tokens),
         num(cachedDetails.text_tokens),
