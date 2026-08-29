@@ -205,6 +205,17 @@ class VoiceAgent {
         const type = String(event.type ?? "");
         if (type === "response.function_call_arguments.done") {
           void this.handleToolCall(dc, event);
+        } else if (type === "response.done") {
+          const response = event.response as Record<string, unknown> | undefined;
+          const usage = response?.usage;
+          if (usage && typeof usage === "object") {
+            void this.bindings?.rpc
+              .call("recordUsage", {
+                model: typeof response?.model === "string" ? response.model : null,
+                usage: usage as Record<string, unknown>,
+              })
+              .catch(() => undefined); // cost tracking must never break the call
+          }
         } else if (type === "error") {
           const detail = (event.error as { message?: string } | undefined)?.message;
           toast.error(`BB Aide: ${detail ?? "realtime error"}`);

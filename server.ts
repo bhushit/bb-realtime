@@ -19,6 +19,16 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ sdp: z.string() }).strict(),
   },
+  /** Record token usage from one realtime response.done event. */
+  recordUsage: {
+    input: z
+      .object({
+        model: z.string().nullable(),
+        usage: z.record(z.string(), z.unknown()),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   /** Run one realtime tool call against the bb SDK. Always returns text. */
   runTool: {
     input: z
@@ -34,6 +44,41 @@ export const rpcContract = defineRpcContract({
 });
 
 const REALTIME_ENDPOINT = "https://api.openai.com/v1/realtime/calls";
+
+// USD per 1M tokens for the gpt-realtime family (openai.com/api/pricing,
+// checked 2026-02). Cached input (text or audio) is a flat $0.40.
+const RATES = {
+  textIn: 4,
+  audioIn: 32,
+  cachedIn: 0.4,
+  textOut: 16,
+  audioOut: 64,
+};
+
+interface UsageRow {
+  ts: number;
+  model: string;
+  input_text: number;
+  input_audio: number;
+  cached_text: number;
+  cached_audio: number;
+  output_text: number;
+  output_audio: number;
+}
+
+/** Estimated USD cost of one usage row at current RATES. */
+function costUsd(row: UsageRow): number {
+  const uncachedText = Math.max(0, row.input_text - row.cached_text);
+  const uncachedAudio = Math.max(0, row.input_audio - row.cached_audio);
+  return (
+    (uncachedText * RATES.textIn +
+      uncachedAudio * RATES.audioIn +
+      (row.cached_text + row.cached_audio) * RATES.cachedIn +
+      row.output_text * RATES.textOut +
+      row.output_audio * RATES.audioOut) /
+    1_000_000
+  );
+}
 
 function truncate(text: string, max = 4000): string {
   return text.length > max ? `${text.slice(0, max)}\n…[truncated]` : text;
@@ -77,6 +122,21 @@ Rules:
 }
 
 export default async function plugin(bb: BbPluginApi) {
+  const db = bb.storage.database();
+  bb.storage.migrate(db, [
+    `CREATE TABLE IF NOT EXISTS usage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      model TEXT NOT NULL,
+      input_text INTEGER NOT NULL DEFAULT 0,
+      input_audio INTEGER NOT NULL DEFAULT 0,
+      cached_text INTEGER NOT NULL DEFAULT 0,
+      cached_audio INTEGER NOT NULL DEFAULT 0,
+      output_text INTEGER NOT NULL DEFAULT 0,
+      output_audio INTEGER NOT NULL DEFAULT 0
+    )`,
+  ]);
+
   const settings = bb.settings.define({
     openaiApiKey: { type: "string", label: "OpenAI API key", secret: true },
     model: { type: "string", label: "Realtime model", default: "gpt-realtime-2" },
@@ -277,6 +337,7 @@ export default async function plugin(bb: BbPluginApi) {
     commands: [
       { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb aide live [--json]" },
       { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb aide read <thread-id>" },
+      { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb aide usage [--days N] [--json]" },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
@@ -301,7 +362,41 @@ export default async function plugin(bb: BbPluginApi) {
           const header = `${threadId}  [${t.status ?? "?"}]  ${t.title ?? "(untitled)"}`;
           return { exitCode: 0, stdout: `${header}\n\n${output ? truncate(output, 20000) : "(no assistant output yet)"}` };
         }
-        return { exitCode: 1, stderr: `Unknown command: ${command}. Try: bb aide live | bb aide read <thread-id>` };
+        if (command === "usage") {
+          const daysFlag = rest.indexOf("--days");
+          const days = daysFlag >= 0 ? Number(rest[daysFlag + 1]) || 30 : 30;
+          const since = Date.now() - days * 86_400_000;
+          const rows = db
+            .prepare("SELECT * FROM usage_events WHERE ts >= ? ORDER BY ts")
+            .all(since) as UsageRow[];
+          const byDay = new Map<string, { responses: number; audioIn: number; audioOut: number; textIn: number; textOut: number; cached: number; cost: number }>();
+          for (const row of rows) {
+            const day = new Date(row.ts).toISOString().slice(0, 10);
+            const entry = byDay.get(day) ?? { responses: 0, audioIn: 0, audioOut: 0, textIn: 0, textOut: 0, cached: 0, cost: 0 };
+            entry.responses += 1;
+            entry.audioIn += row.input_audio;
+            entry.audioOut += row.output_audio;
+            entry.textIn += row.input_text;
+            entry.textOut += row.output_text;
+            entry.cached += row.cached_text + row.cached_audio;
+            entry.cost += costUsd(row);
+            byDay.set(day, entry);
+          }
+          const daysOut = [...byDay.entries()].map(([day, e]) => ({ day, ...e, cost: Number(e.cost.toFixed(4)) }));
+          const total = Number(daysOut.reduce((sum, d) => sum + d.cost, 0).toFixed(4));
+          if (rest.includes("--json")) {
+            return { exitCode: 0, stdout: JSON.stringify({ days: daysOut, totalCostUsd: total, rates: RATES }, null, 2) };
+          }
+          if (daysOut.length === 0) return { exitCode: 0, stdout: `No voice usage recorded in the last ${days} day(s).` };
+          const lines = daysOut.map(
+            (d) => `${d.day}  $${d.cost.toFixed(4)}  (${d.responses} responses \u00b7 audio ${d.audioIn}/${d.audioOut} \u00b7 text ${d.textIn}/${d.textOut} \u00b7 cached ${d.cached})`,
+          );
+          return {
+            exitCode: 0,
+            stdout: `Voice usage, last ${days} day(s) \u2014 estimated at gpt-realtime rates:\n${lines.join("\n")}\nTotal: ~$${total.toFixed(4)}  (tokens in/out per line; authoritative numbers: platform.openai.com/usage)`,
+          };
+        }
+        return { exitCode: 1, stderr: `Unknown command: ${command}. Try: bb aide live | bb aide read <thread-id> | bb aide usage` };
       } catch (error) {
         return { exitCode: 1, stderr: error instanceof Error ? error.message : String(error) };
       }
@@ -339,6 +434,27 @@ export default async function plugin(bb: BbPluginApi) {
         throw new Error(`OpenAI realtime call failed: ${response.status} ${response.statusText}`);
       }
       return { sdp: text };
+    },
+    async recordUsage({ model, usage }) {
+      const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+      const inDetails = (usage.input_token_details ?? {}) as Record<string, unknown>;
+      const outDetails = (usage.output_token_details ?? {}) as Record<string, unknown>;
+      const cachedDetails = (inDetails.cached_tokens_details ?? {}) as Record<string, unknown>;
+      const { model: configuredModel } = await settings.get();
+      db.prepare(
+        `INSERT INTO usage_events (ts, model, input_text, input_audio, cached_text, cached_audio, output_text, output_audio)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        Date.now(),
+        model ?? configuredModel,
+        num(inDetails.text_tokens),
+        num(inDetails.audio_tokens),
+        num(cachedDetails.text_tokens),
+        num(cachedDetails.audio_tokens),
+        num(outDetails.text_tokens),
+        num(outDetails.audio_tokens),
+      );
+      return { ok: true as const };
     },
     async runTool({ name, args, threadId, projectId }) {
       bb.log.info(`voice tool: ${name} ${JSON.stringify(args).slice(0, 300)}`);
