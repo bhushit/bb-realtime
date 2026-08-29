@@ -6,6 +6,7 @@
 // bb SDK (threads, projects, diffs, panes).
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { DEFAULT_MODEL, MODEL_OPTIONS } from "./models";
 
 export const rpcContract = defineRpcContract({
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
@@ -30,6 +31,11 @@ export const rpcContract = defineRpcContract({
         usage: z.record(z.string(), z.unknown()),
       })
       .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** Switch the realtime model used by new voice sessions. */
+  setModel: {
+    input: z.object({ model: z.enum(MODEL_OPTIONS) }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   /** Append one event to a voice session's transcript log. */
@@ -195,7 +201,12 @@ export default async function plugin(bb: BbPluginApi) {
 
   const settings = bb.settings.define({
     openaiApiKey: { type: "string", label: "OpenAI API key", secret: true },
-    model: { type: "string", label: "Realtime model", default: "gpt-realtime-2" },
+    model: {
+      type: "select",
+      label: "Realtime model",
+      options: [...MODEL_OPTIONS],
+      default: DEFAULT_MODEL,
+    },
     voice: { type: "string", label: "Voice", default: "marin" },
   });
 
@@ -512,6 +523,11 @@ export default async function plugin(bb: BbPluginApi) {
       // this and stops any session whose nonce differs.
       bb.realtime.publish("voice-call", { nonce });
       return { sdp: text };
+    },
+    async setModel({ model }) {
+      await bb.sdk.plugins.updateSettings({ pluginId: bb.pluginId, values: { model } });
+      bb.log.info(`realtime model switched to ${model}`);
+      return { ok: true as const };
     },
     async logEvent({ sessionId, kind, payload }) {
       db.prepare(

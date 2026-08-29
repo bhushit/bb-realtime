@@ -3,8 +3,10 @@
 // a live-updating transcript: what you said, what Aide said, every tool call
 // with arguments and result, and errors.
 import { useCallback, useEffect, useState } from "react";
-import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import type { rpcContract } from "./server";
+import { DEFAULT_MODEL, MODEL_OPTIONS, type RealtimeModel } from "./models";
 import { cn } from "@/lib/utils";
 
 interface SessionRow {
@@ -47,6 +49,43 @@ function parsePayload(raw: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function ModelPicker() {
+  const rpc = useRpc<typeof rpcContract>();
+  const { values, isLoading } = useSettings();
+  const [model, setModel] = useState<RealtimeModel | null>(null);
+  const configured = typeof values?.model === "string" ? values.model : DEFAULT_MODEL;
+  const current = model ?? (MODEL_OPTIONS.includes(configured as RealtimeModel) ? (configured as RealtimeModel) : DEFAULT_MODEL);
+
+  async function change(next: RealtimeModel) {
+    setModel(next);
+    try {
+      await rpc.call("setModel", { model: next });
+      toast.success(`Voice model: ${next} (applies to the next session)`);
+    } catch (cause) {
+      setModel(null);
+      toast.error(`Could not switch model: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
+
+  return (
+    <label className="flex items-center gap-2 text-sm text-muted-foreground">
+      Model
+      <select
+        value={current}
+        disabled={isLoading}
+        onChange={(event) => void change(event.target.value as RealtimeModel)}
+        className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground"
+      >
+        {MODEL_OPTIONS.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function EventLine({ event }: { event: EventRow }) {
@@ -185,9 +224,10 @@ export function SessionsPanel() {
           </>
         ) : (
           <>
-            <p className="text-sm text-muted-foreground">
-              Aide Voice Session Transcripts
-            </p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">Aide Voice Session Transcripts</p>
+              <ModelPicker />
+            </div>
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
               {sessions === null ? (
                 <p className="p-3 text-sm text-muted-foreground">Loading…</p>
