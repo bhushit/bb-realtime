@@ -15,6 +15,7 @@ import {
   experimental_useSidebarThreadActions,
   useBbContext,
   useComposer,
+  useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
@@ -74,6 +75,7 @@ class VoiceAgent {
   private session: SessionHandle | null = null;
   private listeners = new Set<() => void>();
   private bindings: Bindings | null = null;
+  private nonce: string | null = null;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -96,9 +98,18 @@ class VoiceAgent {
     else this.stop();
   }
 
+  /** Another window (or this one) started a call: only the newest survives. */
+  onCallStarted(nonce: string) {
+    if (nonce && nonce !== this.nonce && this.state !== "idle") {
+      toast.info("BB Aide: voice session taken over elsewhere");
+      this.stop();
+    }
+  }
+
   stop() {
     const session = this.session;
     this.session = null;
+    this.nonce = null;
     if (session) {
       session.dc?.close();
       session.pc.close();
@@ -168,6 +179,8 @@ class VoiceAgent {
     const bindings = this.bindings;
     if (!bindings) return;
     this.setState("connecting");
+    const nonce = crypto.randomUUID();
+    this.nonce = nonce;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const pc = new RTCPeerConnection();
@@ -230,6 +243,7 @@ class VoiceAgent {
 
       const { sdp } = await bindings.rpc.call("createCall", {
         sdp: localSdp,
+        nonce,
         ...bindings.context,
       });
       if (this.session?.pc !== pc) return; // stopped while exchanging
@@ -265,6 +279,12 @@ function AideVoiceButton() {
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+
+  // Global exclusivity: when any window starts a call, all others stop theirs.
+  useRealtime("voice-call", (payload) => {
+    const nonce = (payload as { nonce?: unknown } | null)?.nonce;
+    if (typeof nonce === "string") voiceAgent.onCallStarted(nonce);
+  });
 
   // Keep the singleton pointed at the freshest surface: after navigation the
   // new composer's button mounts and rebinds, so "this thread" and composer
@@ -309,5 +329,15 @@ export default definePluginApp((app) => {
   app.composer.customize({
     id: "aide-voice",
     actions: [{ id: "voice-agent", component: AideVoiceButton }],
+  });
+  // The session deliberately outlives any component, so tie it to the plugin
+  // frontend generation instead: on reload/disable the old bundle's singleton
+  // would otherwise keep a zombie WebRTC call no button controls.
+  app.contentScripts.register({
+    id: "aide-voice-lifecycle",
+    mount({ signal }) {
+      signal.addEventListener("abort", () => voiceAgent.stop());
+      return () => voiceAgent.stop();
+    },
   });
 });

@@ -15,6 +15,8 @@ export const rpcContract = defineRpcContract({
         sdp: z.string().min(1),
         threadId: z.string().nullable(),
         projectId: z.string().nullable(),
+        /** Unique per call; broadcast so every other window ends its session. */
+        nonce: z.string().min(1),
       })
       .strict(),
     output: z.object({ sdp: z.string() }).strict(),
@@ -404,7 +406,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async createCall({ sdp, threadId, projectId }) {
+    async createCall({ sdp, threadId, projectId, nonce }) {
       const key = await apiKey();
       const { model, voice } = await settings.get();
       const session = {
@@ -433,6 +435,9 @@ export default async function plugin(bb: BbPluginApi) {
         bb.log.error(`OpenAI realtime call failed: ${response.status} ${text.slice(0, 500)}`);
         throw new Error(`OpenAI realtime call failed: ${response.status} ${response.statusText}`);
       }
+      // One voice session at a time, everywhere: every connected client hears
+      // this and stops any session whose nonce differs.
+      bb.realtime.publish("voice-call", { nonce });
       return { sdp: text };
     },
     async recordUsage({ model, usage }) {
