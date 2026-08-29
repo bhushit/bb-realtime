@@ -340,11 +340,30 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb aide live [--json]" },
       { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb aide read <thread-id>" },
       { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb aide usage [--days N] [--json]" },
+      { name: "stop", summary: "Stop any active BB Aide voice session in any bb window.", usage: "bb aide stop" },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
+      const help = [
+        "BB Aide \u2014 voice operator for bb",
+        "",
+        "Usage:",
+        "  bb aide live [--json]            threads that are live right now",
+        "  bb aide read <thread-id>         thread status + latest assistant output",
+        "  bb aide usage [--days N] [--json] voice-session tokens and estimated cost",
+        "  bb aide stop                     stop any active voice session",
+      ].join("\n");
       try {
-        if (command === "live" || command === undefined) {
+        if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+          return { exitCode: 0, stdout: help };
+        }
+        if (command === "stop") {
+          // Every mounted voice button listens on this channel and stops any
+          // session whose nonce differs — an unknown nonce stops them all.
+          bb.realtime.publish("voice-call", { nonce: `cli-stop-${Date.now()}` });
+          return { exitCode: 0, stdout: "Stop signal broadcast to all bb windows." };
+        }
+        if (command === "live") {
           const live = await liveThreads();
           if (rest.includes("--json") || argv.includes("--json")) {
             return { exitCode: 0, stdout: JSON.stringify(live, null, 2) };
@@ -398,7 +417,7 @@ export default async function plugin(bb: BbPluginApi) {
             stdout: `Voice usage, last ${days} day(s) \u2014 estimated at gpt-realtime rates:\n${lines.join("\n")}\nTotal: ~$${total.toFixed(4)}  (tokens in/out per line; authoritative numbers: platform.openai.com/usage)`,
           };
         }
-        return { exitCode: 1, stderr: `Unknown command: ${command}. Try: bb aide live | bb aide read <thread-id> | bb aide usage` };
+        return { exitCode: 1, stderr: `Unknown command: ${command}\n\n${help}` };
       } catch (error) {
         return { exitCode: 1, stderr: error instanceof Error ? error.message : String(error) };
       }
