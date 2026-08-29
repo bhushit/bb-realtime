@@ -4,7 +4,12 @@
 // Clicking it opens a WebRTC session with the OpenAI Realtime API (mic capture
 // and audio playback happen right here in the bb app); the backend performs
 // the SDP exchange (it holds the API key) and executes bb tools via bb.sdk.
-import { useEffect, useRef, useState } from "react";
+//
+// The session lives in a module-level singleton, NOT in the button component:
+// the button mounts inside each composer, and navigating between threads
+// (something the voice agent itself does with focus_thread/start_thread)
+// unmounts that composer. The call must survive its own tool calls.
+import { useEffect, useSyncExternalStore } from "react";
 import {
   definePluginApp,
   useBbContext,
@@ -17,6 +22,21 @@ import { cn } from "@/lib/utils";
 import "./app.css";
 
 type VoiceState = "idle" | "connecting" | "live";
+
+interface RpcClient {
+  call: ReturnType<typeof useRpc<typeof rpcContract>>["call"];
+}
+
+interface ComposerBinding {
+  setText: (text: string) => void;
+  updateText: (updater: (current: string) => string) => void;
+}
+
+interface Bindings {
+  rpc: RpcClient;
+  context: { threadId: string | null; projectId: string | null };
+  composer: ComposerBinding;
+}
 
 interface SessionHandle {
   pc: RTCPeerConnection;
@@ -42,6 +62,161 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 2000): Promise<v
   });
 }
 
+/**
+ * App-global voice session. Mounted buttons keep `bindings` fresh (latest
+ * composer + route context win), so tool calls always act on what the user
+ * is currently looking at, and navigation never interrupts the call.
+ */
+class VoiceAgent {
+  private state: VoiceState = "idle";
+  private session: SessionHandle | null = null;
+  private listeners = new Set<() => void>();
+  private bindings: Bindings | null = null;
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  readonly getState = (): VoiceState => this.state;
+
+  bind(bindings: Bindings) {
+    this.bindings = bindings;
+  }
+
+  private setState(next: VoiceState) {
+    this.state = next;
+    for (const listener of this.listeners) listener();
+  }
+
+  toggle() {
+    if (this.state === "idle") void this.start();
+    else this.stop();
+  }
+
+  stop() {
+    const session = this.session;
+    this.session = null;
+    if (session) {
+      session.dc?.close();
+      session.pc.close();
+      for (const track of session.stream.getTracks()) track.stop();
+      session.audio.srcObject = null;
+      session.audio.remove();
+    }
+    this.setState("idle");
+  }
+
+  private async handleToolCall(dc: RTCDataChannel, event: Record<string, unknown>) {
+    const bindings = this.bindings;
+    const name = String(event.name ?? "");
+    const callId = String(event.call_id ?? "");
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(typeof event.arguments === "string" ? event.arguments : "{}");
+    } catch {
+      /* keep {} */
+    }
+    let output: string;
+    if (!bindings) {
+      output = "Tool error: no bb surface is bound right now.";
+    } else if (name === "set_composer_text") {
+      bindings.composer.setText(String(args.text ?? ""));
+      output = "Composer text replaced.";
+    } else if (name === "append_composer_text") {
+      const text = String(args.text ?? "");
+      bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
+      output = "Text appended to composer.";
+    } else {
+      try {
+        const result = await bindings.rpc.call("runTool", {
+          name,
+          args,
+          ...bindings.context,
+        });
+        output = result.output;
+      } catch (error) {
+        output = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    if (!callId || dc.readyState !== "open") return;
+    dc.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: { type: "function_call_output", call_id: callId, output },
+      }),
+    );
+    dc.send(JSON.stringify({ type: "response.create" }));
+  }
+
+  private async start() {
+    const bindings = this.bindings;
+    if (!bindings) return;
+    this.setState("connecting");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const pc = new RTCPeerConnection();
+      const audio = new Audio();
+      audio.autoplay = true;
+      const session: SessionHandle = { pc, stream, audio, dc: null };
+      this.session = session;
+
+      for (const track of stream.getTracks()) pc.addTrack(track, stream);
+      pc.ontrack = (event) => {
+        audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+        void audio.play().catch(() => undefined);
+      };
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+          if (this.session?.pc === pc) {
+            toast.error("BB Aide: voice connection lost");
+            this.stop();
+          }
+        }
+      };
+
+      const dc = pc.createDataChannel("oai-events");
+      session.dc = dc;
+      dc.onopen = () => {
+        if (this.session?.pc === pc) this.setState("live");
+      };
+      dc.onmessage = (message) => {
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(String(message.data));
+        } catch {
+          return;
+        }
+        const type = String(event.type ?? "");
+        if (type === "response.function_call_arguments.done") {
+          void this.handleToolCall(dc, event);
+        } else if (type === "error") {
+          const detail = (event.error as { message?: string } | undefined)?.message;
+          toast.error(`BB Aide: ${detail ?? "realtime error"}`);
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGathering(pc);
+      const localSdp = pc.localDescription?.sdp;
+      if (!localSdp) throw new Error("No local SDP offer");
+
+      const { sdp } = await bindings.rpc.call("createCall", {
+        sdp: localSdp,
+        ...bindings.context,
+      });
+      if (this.session?.pc !== pc) return; // stopped while exchanging
+      await pc.setRemoteDescription({ type: "answer", sdp });
+    } catch (error) {
+      this.stop();
+      toast.error(`BB Aide: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+const voiceAgent = new VoiceAgent();
+
 function WaveformIcon({ live }: { live: boolean }) {
   return (
     <svg
@@ -62,127 +237,21 @@ function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const { threadId, projectId } = useBbContext();
-  const [state, setState] = useState<VoiceState>("idle");
-  const sessionRef = useRef<SessionHandle | null>(null);
-  // Live context for tool calls — the user may navigate while talking.
-  const contextRef = useRef({ threadId, projectId });
-  contextRef.current = { threadId, projectId };
-  const composerRef = useRef(composer);
-  composerRef.current = composer;
+  const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
 
-  function stop() {
-    const session = sessionRef.current;
-    sessionRef.current = null;
-    if (session) {
-      session.dc?.close();
-      session.pc.close();
-      for (const track of session.stream.getTracks()) track.stop();
-      session.audio.srcObject = null;
-      session.audio.remove();
-    }
-    setState("idle");
-  }
-
-  useEffect(() => stop, []);
-
-  async function handleToolCall(dc: RTCDataChannel, event: Record<string, unknown>) {
-    const name = String(event.name ?? "");
-    const callId = String(event.call_id ?? "");
-    let args: Record<string, unknown> = {};
-    try {
-      args = JSON.parse(typeof event.arguments === "string" ? event.arguments : "{}");
-    } catch {
-      /* keep {} */
-    }
-    let output: string;
-    if (name === "set_composer_text") {
-      composerRef.current.setText(String(args.text ?? ""));
-      output = "Composer text replaced.";
-    } else if (name === "append_composer_text") {
-      const text = String(args.text ?? "");
-      composerRef.current.updateText((current) => (current ? `${current}\n${text}` : text));
-      output = "Text appended to composer.";
-    } else {
-      try {
-        const result = await rpc.call("runTool", { name, args, ...contextRef.current });
-        output = result.output;
-      } catch (error) {
-        output = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
-      }
-    }
-    if (!callId) return;
-    dc.send(
-      JSON.stringify({
-        type: "conversation.item.create",
-        item: { type: "function_call_output", call_id: callId, output },
-      }),
-    );
-    dc.send(JSON.stringify({ type: "response.create" }));
-  }
-
-  async function start() {
-    setState("connecting");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const pc = new RTCPeerConnection();
-      const audio = new Audio();
-      audio.autoplay = true;
-      const session: SessionHandle = { pc, stream, audio, dc: null };
-      sessionRef.current = session;
-
-      for (const track of stream.getTracks()) pc.addTrack(track, stream);
-      pc.ontrack = (event) => {
-        audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
-        void audio.play().catch(() => undefined);
-      };
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-          if (sessionRef.current?.pc === pc) {
-            toast.error("BB Aide: voice connection lost");
-            stop();
-          }
-        }
-      };
-
-      const dc = pc.createDataChannel("oai-events");
-      session.dc = dc;
-      dc.onopen = () => {
-        if (sessionRef.current?.pc === pc) setState("live");
-      };
-      dc.onmessage = (message) => {
-        let event: Record<string, unknown>;
-        try {
-          event = JSON.parse(String(message.data));
-        } catch {
-          return;
-        }
-        const type = String(event.type ?? "");
-        if (type === "response.function_call_arguments.done") {
-          void handleToolCall(dc, event);
-        } else if (type === "error") {
-          const detail = (event.error as { message?: string } | undefined)?.message;
-          toast.error(`BB Aide: ${detail ?? "realtime error"}`);
-        }
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await waitForIceGathering(pc);
-      const localSdp = pc.localDescription?.sdp;
-      if (!localSdp) throw new Error("No local SDP offer");
-
-      const { sdp } = await rpc.call("createCall", {
-        sdp: localSdp,
-        threadId: contextRef.current.threadId,
-        projectId: contextRef.current.projectId,
-      });
-      if (sessionRef.current?.pc !== pc) return; // stopped while exchanging
-      await pc.setRemoteDescription({ type: "answer", sdp });
-    } catch (error) {
-      stop();
-      toast.error(`BB Aide: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+  // Keep the singleton pointed at the freshest surface: after navigation the
+  // new composer's button mounts and rebinds, so "this thread" and composer
+  // edits follow the user while the call keeps running.
+  useEffect(() => {
+    voiceAgent.bind({
+      rpc,
+      context: { threadId, projectId },
+      composer: {
+        setText: (text) => composer.setText(text),
+        updateText: (updater) => composer.updateText(updater),
+      },
+    });
+  }, [rpc, composer, threadId, projectId]);
 
   const live = state === "live";
   return (
@@ -190,7 +259,7 @@ function AideVoiceButton() {
       type="button"
       aria-label={live ? "Stop BB Aide voice agent" : "Start BB Aide voice agent"}
       title={live ? "Stop BB Aide" : "Talk to BB Aide"}
-      onClick={() => (state === "idle" ? void start() : stop())}
+      onClick={() => voiceAgent.toggle()}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
         state === "idle" &&
