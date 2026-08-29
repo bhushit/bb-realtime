@@ -43,6 +43,7 @@ function toolSchemas() {
   return [
     { type: "function", name: "get_context", description: "Get the user's current bb context: the thread and project currently in view, including the thread's status and latest assistant output." },
     { type: "function", name: "list_projects", description: "List bb projects with their ids and names." },
+    { type: "function", name: "list_live_threads", description: "List the threads that are live right now (running, starting, provisioning, or waiting), like the Live threads section in the bb sidebar." },
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
     { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
@@ -97,6 +98,46 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  const LIVE_STATUSES = new Set([
+    "active",
+    "starting",
+    "stopping",
+    "provisioning",
+    "waiting-for-host",
+    "host-reconnecting",
+  ]);
+
+  /** Threads that are live right now, newest activity first, with project names. */
+  async function liveThreads() {
+    const [threads, projects] = await Promise.all([
+      bb.sdk.threads.list({ limit: 200 }),
+      bb.sdk.projects.list({ includePersonal: true }),
+    ]);
+    const projectNames = new Map(projects.map((p) => [p.id, p.name]));
+    return threads
+      .filter((t) => !t.archivedAt && LIVE_STATUSES.has(t.runtime.displayStatus))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((t) => ({
+        id: t.id,
+        title: t.title ?? t.titleFallback ?? "(untitled)",
+        status: t.runtime.displayStatus,
+        project: projectNames.get(t.projectId) ?? t.projectId,
+        projectId: t.projectId,
+        providerId: t.providerId,
+        updatedAt: t.updatedAt,
+      }));
+  }
+
+  function relativeTime(timestamp: number): string {
+    const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+    if (seconds < 60) return "just now";
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.round(hours / 24)}d ago`;
+  }
+
   async function resolveEnvironmentId(threadId: string): Promise<string | null> {
     const thread = await bb.sdk.threads.get({ threadId });
     return (thread as { environmentId?: string | null }).environmentId ?? null;
@@ -142,6 +183,10 @@ export default async function plugin(bb: BbPluginApi) {
       case "list_projects": {
         const projects = await bb.sdk.projects.list({ includePersonal: true });
         return JSON.stringify(projects.map((p) => ({ id: p.id, name: p.name })));
+      }
+      case "list_live_threads": {
+        const live = await liveThreads();
+        return live.length === 0 ? "No live threads right now." : JSON.stringify(live);
       }
       case "list_threads": {
         const projectId = typeof args.project_id === "string" ? args.project_id : undefined;
@@ -220,6 +265,43 @@ export default async function plugin(bb: BbPluginApi) {
         return `Unknown tool: ${name}`;
     }
   }
+
+  bb.cli.register({
+    name: "aide",
+    summary: "BB Aide: inspect live (running) bb threads",
+    commands: [
+      { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb aide live [--json]" },
+      { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb aide read <thread-id>" },
+    ],
+    async run(argv) {
+      const [command, ...rest] = argv;
+      try {
+        if (command === "live" || command === undefined) {
+          const live = await liveThreads();
+          if (rest.includes("--json") || argv.includes("--json")) {
+            return { exitCode: 0, stdout: JSON.stringify(live, null, 2) };
+          }
+          if (live.length === 0) return { exitCode: 0, stdout: "No live threads right now." };
+          const lines = live.map(
+            (t) => `${t.id}  [${t.status}]  ${t.title}  (${t.project} \u00b7 ${t.providerId} \u00b7 ${relativeTime(t.updatedAt)})`,
+          );
+          return { exitCode: 0, stdout: `${live.length} live thread(s):\n${lines.join("\n")}` };
+        }
+        if (command === "read") {
+          const threadId = rest.find((arg) => !arg.startsWith("-"));
+          if (!threadId) return { exitCode: 1, stderr: "Usage: bb aide read <thread-id>" };
+          const thread = await bb.sdk.threads.get({ threadId });
+          const { output } = await bb.sdk.threads.output({ threadId });
+          const t = thread as { title?: string | null; status?: string };
+          const header = `${threadId}  [${t.status ?? "?"}]  ${t.title ?? "(untitled)"}`;
+          return { exitCode: 0, stdout: `${header}\n\n${output ? truncate(output, 20000) : "(no assistant output yet)"}` };
+        }
+        return { exitCode: 1, stderr: `Unknown command: ${command}. Try: bb aide live | bb aide read <thread-id>` };
+      } catch (error) {
+        return { exitCode: 1, stderr: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
 
   bb.rpc.register(rpcContract, {
     async createCall({ sdp, threadId, projectId }) {
