@@ -77,6 +77,12 @@ class VoiceAgent {
   private listeners = new Set<() => void>();
   private bindings: Bindings | null = null;
   private nonce: string | null = null;
+  /** Serializes tool executions so outputs are submitted in call order. */
+  private toolChain: Promise<void> = Promise.resolve();
+  /** True while the model is generating a response (response.created→done). */
+  private responseActive = false;
+  /** A response.create is owed once the active response finishes. */
+  private responsePending = false;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -115,11 +121,30 @@ class VoiceAgent {
     }
   }
 
+  /**
+   * Ask the model to continue — at most one response.create in flight.
+   * The realtime API rejects response.create while a response is being
+   * generated (e.g. two tool calls in one response would send two), so an
+   * active response defers a single coalesced create until response.done.
+   */
+  private requestResponse(dc: RTCDataChannel) {
+    if (dc.readyState !== "open") return;
+    if (this.responseActive) {
+      this.responsePending = true;
+      return;
+    }
+    this.responseActive = true;
+    dc.send(JSON.stringify({ type: "response.create" }));
+  }
+
   stop() {
     if (this.session) this.log("session.stopped");
     const session = this.session;
     this.session = null;
     this.nonce = null;
+    this.toolChain = Promise.resolve();
+    this.responseActive = false;
+    this.responsePending = false;
     if (session) {
       session.dc?.close();
       session.pc.close();
@@ -178,13 +203,14 @@ class VoiceAgent {
     }
     this.log("tool.result", { name, output: output.slice(0, 4000) });
     if (!callId || dc.readyState !== "open") return;
+    // Creating the output item is always safe; only response.create must wait.
     dc.send(
       JSON.stringify({
         type: "conversation.item.create",
         item: { type: "function_call_output", call_id: callId, output },
       }),
     );
-    dc.send(JSON.stringify({ type: "response.create" }));
+    this.requestResponse(dc);
   }
 
   private async start() {
@@ -232,8 +258,12 @@ class VoiceAgent {
           return;
         }
         const type = String(event.type ?? "");
-        if (type === "response.function_call_arguments.done") {
-          void this.handleToolCall(dc, event);
+        if (type === "response.created") {
+          this.responseActive = true;
+        } else if (type === "response.function_call_arguments.done") {
+          this.toolChain = this.toolChain
+            .then(() => this.handleToolCall(dc, event))
+            .catch(() => undefined);
         } else if (type === "conversation.item.input_audio_transcription.completed") {
           const text = String(event.transcript ?? "").trim();
           if (text) this.log("user", { text });
@@ -244,6 +274,11 @@ class VoiceAgent {
           const text = String(event.transcript ?? "").trim();
           if (text) this.log("assistant", { text });
         } else if (type === "response.done") {
+          this.responseActive = false;
+          if (this.responsePending) {
+            this.responsePending = false;
+            this.requestResponse(dc);
+          }
           const response = event.response as Record<string, unknown> | undefined;
           const usage = response?.usage;
           if (usage && typeof usage === "object") {
