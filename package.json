@@ -7,7 +7,7 @@
     "bbPluginSdk": ">=0.4.21"
   },
   "bb": {
-    "name": "BB Aide",
+    "name": "Aide",
     "description": "Realtime voice operator for bb: talk to an agent that focuses threads, sends messages, starts work, and shows diffs.",
     "branding": {
       "icon": "AudioLines"

@@ -110,7 +110,7 @@ class VoiceAgent {
   /** Another window (or this one) started a call: only the newest survives. */
   onCallStarted(nonce: string) {
     if (nonce && nonce !== this.nonce && this.state !== "idle") {
-      toast.info("BB Aide: voice session taken over elsewhere");
+      toast.info("Aide: voice session taken over elsewhere");
       this.stop();
     }
   }
@@ -210,7 +210,7 @@ class VoiceAgent {
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
           if (this.session?.pc === pc) {
-            toast.error("BB Aide: voice connection lost");
+            toast.error("Aide: voice connection lost");
             this.stop();
           }
         }
@@ -258,7 +258,7 @@ class VoiceAgent {
         } else if (type === "error") {
           const detail = (event.error as { message?: string } | undefined)?.message;
           this.log("error", { message: detail ?? "realtime error" });
-          toast.error(`BB Aide: ${detail ?? "realtime error"}`);
+          toast.error(`Aide: ${detail ?? "realtime error"}`);
         }
       };
 
@@ -277,7 +277,7 @@ class VoiceAgent {
       await pc.setRemoteDescription({ type: "answer", sdp });
     } catch (error) {
       this.stop();
-      toast.error(`BB Aide: ${error instanceof Error ? error.message : String(error)}`);
+      toast.error(`Aide: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }
@@ -336,8 +336,8 @@ function AideVoiceButton() {
   return (
     <button
       type="button"
-      aria-label={live ? "Stop BB Aide voice agent" : "Start BB Aide voice agent"}
-      title={live ? "Stop BB Aide" : "Talk to BB Aide"}
+      aria-label={live ? "Stop Aide voice agent" : "Start Aide voice agent"}
+      title={live ? "Stop Aide" : "Talk to Aide"}
       onClick={() => voiceAgent.toggle()}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
@@ -359,7 +359,7 @@ export default definePluginApp((app) => {
   });
   app.slots.navPanel({
     id: "sessions",
-    title: "BB Aide",
+    title: "Aide",
     icon: "AudioLines",
     path: "sessions",
     component: SessionsPanel,

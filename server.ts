@@ -1,4 +1,4 @@
-// bb-plugin-aide — BB Aide: a realtime voice operator for bb.
+// bb-plugin-aide — Aide: a realtime voice operator for bb.
 //
 // The frontend (app.tsx) captures mic audio over WebRTC directly in the bb
 // app; this backend holds the OpenAI API key, performs the SDP exchange with
@@ -154,7 +154,7 @@ function toolSchemas() {
 }
 
 function instructions(context: { threadId: string | null; projectId: string | null }): string {
-  return `You are BB Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
+  return `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
 
 The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, and edit the user's prompt composer.
 
@@ -389,17 +389,17 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "aide",
-    summary: "BB Aide: inspect live (running) bb threads",
+    summary: "Aide: inspect live (running) bb threads",
     commands: [
       { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb aide live [--json]" },
       { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb aide read <thread-id>" },
       { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb aide usage [--days N] [--json]" },
-      { name: "stop", summary: "Stop any active BB Aide voice session in any bb window.", usage: "bb aide stop" },
+      { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb aide stop" },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
       const help = [
-        "BB Aide \u2014 voice operator for bb",
+        "Aide \u2014 voice operator for bb",
         "",
         "Usage:",
         "  bb aide live [--json]            threads that are live right now",

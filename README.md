@@ -1,6 +1,6 @@
-# BB Aide 🎙️
+# Aide 🎙️
 
-**Talk to bb.** BB Aide adds a voice agent to [bb](https://getbb.app): click
+**Talk to bb.** Aide adds a voice agent to [bb](https://getbb.app): click
 the little waveform button in the composer, start talking, and an assistant
 with real control over bb does the work — finds threads, puts them on screen,
 messages your coding agents, kicks off new work, and reads results back to

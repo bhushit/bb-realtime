@@ -1,4 +1,4 @@
-// BB Aide sessions page: inspect voice sessions inside bb — the bb-native
+// Aide sessions page: inspect voice sessions inside bb — the bb-native
 // version of CodeAide's HTML session log. Lists sessions with cost, and shows
 // a live-updating transcript: what you said, what Aide said, every tool call
 // with arguments and result, and errors.
