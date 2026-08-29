@@ -11,7 +11,7 @@ you.
 1. Install and configure:
 
    ```sh
-   cd bb-aide
+   cd bb-realtime
    npm install
    bb plugin install . --yes
    bb plugin config realtime set openaiApiKey <your-openai-key>
