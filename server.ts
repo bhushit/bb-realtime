@@ -225,6 +225,7 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     ...pluginTool,
     { type: "function", name: "get_context", description: "Get the user's current bb context: the thread and project currently in view, including the thread's status and latest assistant output." },
     { type: "function", name: "list_projects", description: "List bb projects with their ids and names." },
+    { type: "function", name: "list_machines", description: "List the machines (hosts) bb can run threads on: id, name, connection status — and, for a project, which machines hold it and which is its default. Use before start_thread when the machine matters.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Marks which machines hold this project and which is its default. Defaults to the user's current project." } } } },
     { type: "function", name: "list_live_threads", description: "List the threads in the Live threads sidebar section: running right now (active/starting/provisioning/waiting), plus threads that finished within the last 30 minutes (status 'recently-finished'). Only threads without a 'recently-finished' status are still working." },
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
@@ -232,7 +233,7 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     { type: "function", name: "focus_thread", description: "Open/focus a thread in the user's bb app window.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
-    { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; NEVER invent or paraphrase a prompt. With no prompt, this opens bb's New thread screen for the user to type their own.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" } } } },
+    { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; NEVER invent or paraphrase a prompt. With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
@@ -254,6 +255,7 @@ Rules:
 - Never invent prompts, titles, or messages on the user's behalf — send only their words. If required information is missing, ask one short question.
 - When reading agent output aloud, give a one-or-two-sentence summary; never read code or ids verbatim.
 - Prefer focus_thread so the user sees what you are talking about.
+- Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting.
 - When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to amend these standing instructions.`;
 
 export default async function plugin(bb: BbPluginApi) {
@@ -574,6 +576,29 @@ export default async function plugin(bb: BbPluginApi) {
         const projects = await bb.sdk.projects.list({ includePersonal: true });
         return JSON.stringify(projects.map((p) => ({ id: p.id, name: p.name })));
       }
+      case "list_machines": {
+        const hosts = await bb.sdk.hosts.list();
+        const projectId =
+          typeof args.project_id === "string" && args.project_id ? args.project_id : context.projectId;
+        let sources: { hostId: string; isDefault: boolean }[] = [];
+        if (projectId) {
+          const projects = await bb.sdk.projects.list({ includePersonal: true });
+          sources = projects.find((p) => p.id === projectId)?.sources ?? [];
+        }
+        return JSON.stringify(
+          hosts.map((host) => ({
+            id: host.id,
+            name: host.name,
+            status: host.status,
+            ...(projectId
+              ? {
+                  hasProject: sources.some((s) => s.hostId === host.id),
+                  projectDefault: sources.some((s) => s.hostId === host.id && s.isDefault),
+                }
+              : {}),
+          })),
+        );
+      }
       case "list_live_threads": {
         const live = await liveThreads();
         return live.length === 0 ? "No live threads right now." : JSON.stringify(live);
@@ -618,9 +643,19 @@ export default async function plugin(bb: BbPluginApi) {
         // Promptless start_thread is handled in the frontend (opens the New
         // thread screen); reaching here without one means that path failed.
         if (!prompt) return "No prompt given. Ask the user what the new thread should work on.";
+        const machineId =
+          typeof args.machine_id === "string" && args.machine_id ? args.machine_id : null;
         const thread = await bb.sdk.threads.spawn({
           projectId,
-          environment: { type: "project-default" },
+          // A named machine gets a fresh managed worktree from the default
+          // branch there; otherwise bb's project-default environment applies.
+          environment: machineId
+            ? {
+                type: "host",
+                hostId: machineId,
+                workspace: { type: "managed-worktree", baseBranch: { kind: "default" } },
+              }
+            : { type: "project-default" },
           prompt,
           ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
         });
