@@ -4,6 +4,13 @@
 import { toast } from "sonner";
 import type { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import {
+  audioCaptureConstraint,
+  readAudioDevicePreferences,
+  shouldRetryWithDefaultDevice,
+  writeAudioDevicePreferences,
+  type AudioDevicePreferences,
+} from "./audio-devices.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 
@@ -28,6 +35,14 @@ interface SessionHandle {
   stream: MediaStream;
   audio: HTMLAudioElement;
   dc: RTCDataChannel | null;
+}
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 /** Wait for ICE gathering to finish (bounded) so we send a complete offer. */
@@ -58,6 +73,11 @@ export class VoiceAgent {
   private listeners = new Set<() => void>();
   private bindings: Bindings | null = null;
   private nonce: string | null = null;
+  private storage = browserStorage();
+  private audioPreferences: AudioDevicePreferences =
+    this.storage
+      ? readAudioDevicePreferences(this.storage)
+      : { inputDeviceId: "", outputDeviceId: "" };
   /** Serializes tool executions so outputs are submitted in call order. */
   private toolChain: Promise<void> = Promise.resolve();
   /** True while the model is generating a response (response.created→done). */
@@ -78,13 +98,36 @@ export class VoiceAgent {
 
   readonly getState = (): VoiceState => this.state;
 
+  readonly getAudioPreferences = (): AudioDevicePreferences => this.audioPreferences;
+
   bind(bindings: Bindings) {
     this.bindings = bindings;
   }
 
   private setState(next: VoiceState) {
     this.state = next;
+    this.emitChange();
+  }
+
+  private emitChange() {
     for (const listener of this.listeners) listener();
+  }
+
+  setAudioPreferences(next: AudioDevicePreferences) {
+    this.audioPreferences = { ...next };
+    if (this.storage) writeAudioDevicePreferences(this.storage, this.audioPreferences);
+    this.emitChange();
+  }
+
+  refreshAudioPreferences() {
+    if (!this.storage) return;
+    const next = readAudioDevicePreferences(this.storage);
+    if (
+      next.inputDeviceId === this.audioPreferences.inputDeviceId &&
+      next.outputDeviceId === this.audioPreferences.outputDeviceId
+    ) return;
+    this.audioPreferences = next;
+    this.emitChange();
   }
 
   toggle() {
@@ -279,12 +322,38 @@ export class VoiceAgent {
     this.nonce = nonce;
     this.log("session.started", { ...bindings.context });
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: audioCaptureConstraint(this.audioPreferences.inputDeviceId),
+        });
+      } catch (error) {
+        if (
+          !this.audioPreferences.inputDeviceId ||
+          !shouldRetryWithDefaultDevice(error)
+        ) throw error;
+        this.setAudioPreferences({ ...this.audioPreferences, inputDeviceId: "" });
+        toast.info("Aide: selected microphone unavailable; using system default");
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
       const pc = new RTCPeerConnection();
       const audio = new Audio();
       audio.autoplay = true;
       const session: SessionHandle = { pc, stream, audio, dc: null };
       this.session = session;
+      const setSinkId = (audio as HTMLAudioElement & {
+        setSinkId?: (deviceId: string) => Promise<void>;
+      }).setSinkId;
+      if (this.audioPreferences.outputDeviceId && setSinkId) {
+        try {
+          await setSinkId.call(audio, this.audioPreferences.outputDeviceId);
+        } catch {
+          if (this.session?.pc !== pc) return;
+          this.setAudioPreferences({ ...this.audioPreferences, outputDeviceId: "" });
+          toast.info("Aide: selected speaker unavailable; using system default");
+        }
+      }
+      if (this.session?.pc !== pc) return;
 
       for (const track of stream.getTracks()) pc.addTrack(track, stream);
       pc.ontrack = (event) => {

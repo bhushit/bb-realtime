@@ -74,6 +74,12 @@ skill.
 | `voice` | `marin` | Assistant voice |
 | `pluginCommands` | `all` | Which installed plugins' `bb` commands the voice agent may run via its `run_plugin_command` tool: `all`, `none`, or comma-separated plugin ids (e.g. `automation,connect`) |
 
+Microphone and speaker choices are available under **Audio devices** in the
+Handsfree plugin settings and on the Handsfree page. They are stored in the
+current browser and apply to the next voice session. If a selected device is
+disconnected, Handsfree falls back to the system default. Speaker selection
+depends on browser support for audio output routing.
+
 Change with `bb plugin config handsfree set <key> <value>`, then
 `bb plugin reload aide`.
 

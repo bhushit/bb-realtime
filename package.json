@@ -2,6 +2,10 @@
   "name": "bb-plugin-handsfree",
   "version": "0.1.2",
   "type": "module",
+  "scripts": {
+    "test": "node --test audio-devices.test.ts voice-agent.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "engines": {
     "bb": ">=0.40",
     "bbPluginSdk": ">=0.4.21"

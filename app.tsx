@@ -16,8 +16,9 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
-import { SessionsPanel } from "./sessions-panel";
+import { AudioDeviceSettings, SessionsPanel } from "./sessions-panel";
 import { cn } from "@/lib/utils";
+import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import "./app.css";
 
 
@@ -160,6 +161,12 @@ function SidebarLiveIndicator() {
 }
 
 export default definePluginApp((app) => {
+  app.slots.settingsSection({
+    id: "audio-devices",
+    title: "Audio devices",
+    description: "Choose the microphone and speaker used by new Realtime voice sessions.",
+    component: AudioDeviceSettings,
+  });
   app.composer.customize({
     id: "aide-voice",
     actions: [{ id: "voice-agent", component: AideVoiceButton }],
@@ -178,6 +185,9 @@ export default definePluginApp((app) => {
   app.contentScripts.register({
     id: "aide-voice-lifecycle",
     mount({ signal }) {
+      window.addEventListener("storage", (event) => {
+        if (event.key === AUDIO_DEVICE_STORAGE_KEY) voiceAgent.refreshAudioPreferences();
+      }, { signal });
       signal.addEventListener("abort", () => voiceAgent.stop());
       return () => voiceAgent.stop();
     },
