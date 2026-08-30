@@ -1,4 +1,4 @@
-// bb-plugin-realtime — Aide: a realtime voice operator for bb.
+// bb-plugin-handsfree — Aide: a realtime voice operator for bb.
 //
 // The frontend (app.tsx) captures mic audio over WebRTC directly in the bb
 // app; this backend holds the OpenAI API key, performs the SDP exchange with
@@ -373,14 +373,14 @@ export default async function plugin(bb: BbPluginApi) {
     const codex = await codexToken();
     if (codex) return codex;
     throw new Error(
-      "No OpenAI credentials. Set an API key with `bb plugin config realtime set openaiApiKey <key>`, or sign in with `codex login` to use your ChatGPT subscription.",
+      "No OpenAI credentials. Set an API key with `bb plugin config handsfree set openaiApiKey <key>`, or sign in with `codex login` to use your ChatGPT subscription.",
     );
   }
 
   {
     const { openaiApiKey } = await settings.get();
     if (!openaiApiKey && !process.env.OPENAI_API_KEY && !(await codexToken())) {
-      bb.status.needsConfiguration("Set openaiApiKey with `bb plugin config realtime set openaiApiKey <key>`, or run `codex login`, then reload.");
+      bb.status.needsConfiguration("Set openaiApiKey with `bb plugin config handsfree set openaiApiKey <key>`, or run `codex login`, then reload.");
     }
   }
 
@@ -581,27 +581,27 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.cli.register({
-    name: "realtime",
-    summary: "Realtime voice plugin: inspect live threads and voice sessions",
+    name: "handsfree",
+    summary: "Handsfree voice plugin: inspect live threads and voice sessions",
     commands: [
-      { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb realtime live [--json]" },
-      { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb realtime read <thread-id>" },
-      { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb realtime usage [--days N] [--json]" },
-      { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb realtime stop" },
-      { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb realtime mute" },
-      { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb realtime unmute" },
+      { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb handsfree live [--json]" },
+      { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb handsfree read <thread-id>" },
+      { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb handsfree usage [--days N] [--json]" },
+      { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb handsfree stop" },
+      { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb handsfree mute" },
+      { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb handsfree unmute" },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
       const help = [
-        "Realtime \u2014 voice operator for bb",
+        "Handsfree \u2014 voice operator for bb",
         "",
         "Usage:",
-        "  bb realtime live [--json]            threads that are live right now",
-        "  bb realtime read <thread-id>         thread status + latest assistant output",
-        "  bb realtime usage [--days N] [--json] voice-session tokens and estimated cost",
-        "  bb realtime stop                     stop any active voice session",
-        "  bb realtime mute | unmute            mute/unmute the active session's mic",
+        "  bb handsfree live [--json]            threads that are live right now",
+        "  bb handsfree read <thread-id>         thread status + latest assistant output",
+        "  bb handsfree usage [--days N] [--json] voice-session tokens and estimated cost",
+        "  bb handsfree stop                     stop any active voice session",
+        "  bb handsfree mute | unmute            mute/unmute the active session's mic",
       ].join("\n");
       try {
         if (command === undefined || command === "help" || command === "--help" || command === "-h") {
@@ -630,7 +630,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (command === "read") {
           const threadId = rest.find((arg) => !arg.startsWith("-"));
-          if (!threadId) return { exitCode: 1, stderr: "Usage: bb realtime read <thread-id>" };
+          if (!threadId) return { exitCode: 1, stderr: "Usage: bb handsfree read <thread-id>" };
           const thread = await bb.sdk.threads.get({ threadId });
           const { output } = await bb.sdk.threads.output({ threadId });
           const t = thread as { title?: string | null; status?: string };

@@ -1,14 +1,14 @@
 {
-  "name": "bb-plugin-realtime",
-  "version": "0.1.0",
+  "name": "bb-plugin-handsfree",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "bb": ">=0.40",
     "bbPluginSdk": ">=0.4.21"
   },
   "bb": {
-    "name": "Realtime",
-    "description": "Realtime voice operator for bb: talk to an agent that focuses threads, sends messages, starts work, and shows diffs.",
+    "name": "Handsfree",
+    "description": "Hands-free voice operator for bb: talk to an agent that focuses threads, sends messages, starts work, and shows diffs.",
     "branding": {
       "icon": "AudioLines"
     },

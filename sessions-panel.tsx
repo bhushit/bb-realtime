@@ -256,7 +256,7 @@ function PromptEditor() {
           <button
             type="button"
             disabled={!dirty || text.trim().length === 0}
-            onClick={() => void save(text, "edited in Realtime page")}
+            onClick={() => void save(text, "edited in Handsfree page")}
             className="rounded-md border border-border bg-primary/10 px-3 py-1 text-sm text-primary disabled:opacity-40"
           >
             Save

@@ -1,4 +1,4 @@
-// bb-plugin-realtime — frontend: a voice-agent toggle in the composer.
+// bb-plugin-handsfree — frontend: a voice-agent toggle in the composer.
 //
 // A circular waveform button rendered beside the native mic/submit controls.
 // Clicking it opens a WebRTC session with the OpenAI Realtime API (mic capture
@@ -61,7 +61,7 @@ function AideVoiceButton() {
     if (typeof nonce === "string") voiceAgent.onCallStarted(nonce);
   });
 
-  // CLI mute control: bb realtime mute|unmute broadcasts on this channel.
+  // CLI mute control: bb handsfree mute|unmute broadcasts on this channel.
   useRealtime("voice-mute", (payload) => {
     const muted = (payload as { muted?: unknown } | null)?.muted;
     if (typeof muted === "boolean") voiceAgent.setMuted(muted);
@@ -166,7 +166,7 @@ export default definePluginApp((app) => {
   });
   app.slots.navPanel({
     id: "sessions",
-    title: "Realtime",
+    title: "Handsfree",
     icon: "AudioLines",
     path: "sessions",
     component: SessionsPanel,

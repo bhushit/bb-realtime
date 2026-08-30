@@ -1,5 +1,5 @@
 // The app-global voice session singleton. Lives in its own module so both
-// the composer button (app.tsx) and the Realtime page (sessions-panel.tsx)
+// the composer button (app.tsx) and the Handsfree page (sessions-panel.tsx)
 // can control one shared session without a circular import.
 import { toast } from "sonner";
 import type { useRpc } from "@get-bb/plugin-sdk/app";
