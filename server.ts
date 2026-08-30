@@ -494,6 +494,7 @@ export default async function plugin(bb: BbPluginApi) {
         projectId: t.projectId,
         providerId: t.providerId,
         updatedAt: t.updatedAt,
+        environmentId: t.environmentId ?? null,
       }));
   }
 
@@ -538,7 +539,47 @@ export default async function plugin(bb: BbPluginApi) {
       status: t.status,
       projectId: t.projectId,
       providerId: t.providerId ?? t.provider,
+      environmentId: t.environmentId ?? null,
     };
+  }
+
+  /**
+   * Attach `machine` (host name) to described threads by resolving each
+   * thread's environment → hostId → host name. Best-effort: lookup failures
+   * leave `machine: null` rather than failing the tool.
+   */
+  async function withMachines(
+    threads: Record<string, unknown>[],
+  ): Promise<Record<string, unknown>[]> {
+    const environmentIds = [
+      ...new Set(
+        threads
+          .map((t) => t.environmentId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    ];
+    const hostNames = new Map<string, string>();
+    try {
+      for (const host of await bb.sdk.hosts.list()) hostNames.set(host.id, host.name);
+    } catch {
+      /* machine stays null */
+    }
+    const envHost = new Map<string, string>();
+    await Promise.all(
+      environmentIds.map(async (environmentId) => {
+        try {
+          const environment = await bb.sdk.environments.get({ environmentId });
+          const hostId = (environment as { hostId?: string }).hostId;
+          if (hostId) envHost.set(environmentId, hostId);
+        } catch {
+          /* machine stays null */
+        }
+      }),
+    );
+    return threads.map(({ environmentId, ...rest }) => {
+      const hostId = typeof environmentId === "string" ? envHost.get(environmentId) : undefined;
+      return { ...rest, machine: hostId ? (hostNames.get(hostId) ?? hostId) : null };
+    });
   }
 
   async function runTool(
@@ -561,7 +602,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         if (context.threadId) {
           const thread = await bb.sdk.threads.get({ threadId: context.threadId });
-          result.thread = describeThread(thread);
+          result.thread = (await withMachines([describeThread(thread)]))[0];
           const { output } = await bb.sdk.threads.output({ threadId: context.threadId });
           if (output) result.lastAssistantOutput = truncate(output, 2000);
         }
@@ -600,14 +641,14 @@ export default async function plugin(bb: BbPluginApi) {
         );
       }
       case "list_live_threads": {
-        const live = await liveThreads();
+        const live = await withMachines(await liveThreads());
         return live.length === 0 ? "No live threads right now." : JSON.stringify(live);
       }
       case "list_threads": {
         const projectId = typeof args.project_id === "string" ? args.project_id : undefined;
         const limit = typeof args.limit === "number" ? Math.min(args.limit, 50) : 15;
         const threads = await bb.sdk.threads.list({ projectId, limit });
-        return JSON.stringify(threads.map(describeThread));
+        return JSON.stringify(await withMachines(threads.map(describeThread)));
       }
       case "search_threads": {
         const result = await bb.sdk.threads.search({ query: str("query") });
@@ -617,7 +658,8 @@ export default async function plugin(bb: BbPluginApi) {
         const threadId = str("thread_id");
         const thread = await bb.sdk.threads.get({ threadId });
         const { output } = await bb.sdk.threads.output({ threadId });
-        return JSON.stringify({ ...describeThread(thread), lastAssistantOutput: output ? truncate(output) : null });
+        const [described] = await withMachines([describeThread(thread)]);
+        return JSON.stringify({ ...described, lastAssistantOutput: output ? truncate(output) : null });
       }
       case "focus_thread": {
         const { delivered } = await bb.sdk.threads.open({ threadId: str("thread_id"), file: null });
@@ -660,7 +702,7 @@ export default async function plugin(bb: BbPluginApi) {
           ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
         });
         await bb.sdk.threads.open({ threadId: thread.id, file: null }).catch(() => undefined);
-        return JSON.stringify({ started: describeThread(thread) });
+        return JSON.stringify({ started: (await withMachines([describeThread(thread)]))[0] });
       }
       case "stop_thread": {
         await bb.sdk.threads.stop({ threadId: str("thread_id") });
