@@ -14,7 +14,7 @@ interface PreferenceStorage {
   setItem(key: string, value: string): unknown;
 }
 
-export const AUDIO_DEVICE_STORAGE_KEY = "bb-realtime.audio-devices";
+export const AUDIO_DEVICE_STORAGE_KEY = "bb-handsfree.audio-devices";
 const DEFAULT_PREFERENCES: AudioDevicePreferences = {
   inputDeviceId: "",
   outputDeviceId: "",

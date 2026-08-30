@@ -164,7 +164,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "audio-devices",
     title: "Audio devices",
-    description: "Choose the microphone and speaker used by new Realtime voice sessions.",
+    description: "Choose the microphone and speaker used by new Handsfree voice sessions.",
     component: AudioDeviceSettings,
   });
   app.composer.customize({
