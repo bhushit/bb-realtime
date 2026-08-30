@@ -192,8 +192,34 @@ function truncate(text: string, max = 4000): string {
   return text.length > max ? `${text.slice(0, max)}\n…[truncated]` : text;
 }
 
-function toolSchemas() {
+/** One installed plugin's contributed `bb` command, as exposed to the voice agent. */
+interface PluginCommandInfo {
+  id: string;
+  name: string;
+  summary: string;
+}
+
+function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
+  const pluginTool =
+    pluginCommands.length === 0
+      ? []
+      : [
+          {
+            type: "function",
+            name: "run_plugin_command",
+            description: `Run an installed bb plugin's CLI command and return its text output. Available: ${pluginCommands.map((c) => `${c.id} (bb ${c.name} — ${c.summary})`).join("; ")}. When unsure of a plugin's subcommands, call it with argv ["--help"] first.`,
+            parameters: {
+              type: "object",
+              properties: {
+                plugin_id: { type: "string", enum: pluginCommands.map((c) => c.id), description: "Which plugin's command to run." },
+                argv: { type: "array", items: { type: "string" }, description: 'Arguments after the command name, e.g. ["--help"] or ["list", "--json"].' },
+              },
+              required: ["plugin_id"],
+            },
+          },
+        ];
   return [
+    ...pluginTool,
     { type: "function", name: "get_context", description: "Get the user's current bb context: the thread and project currently in view, including the thread's status and latest assistant output." },
     { type: "function", name: "list_projects", description: "List bb projects with their ids and names." },
     { type: "function", name: "list_live_threads", description: "List the threads that are live right now (running, starting, provisioning, or waiting), like the Live threads section in the bb sidebar." },
@@ -273,7 +299,48 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Announce thread events in voice sessions",
       default: true,
     },
+    pluginCommands: {
+      type: "string",
+      label: 'Plugin commands exposed to the voice agent: "all", "none", or comma-separated plugin ids',
+      default: "all",
+    },
   });
+
+  // ---- plugin-command exposure ----
+  // Other installed plugins contribute `bb` CLI commands. The voice agent
+  // learns about them via its session prompt and runs them through the
+  // run_plugin_command tool; the pluginCommands setting curates which
+  // plugins are exposed (all / none / allowlist of plugin ids).
+  async function exposedPluginCommands(): Promise<PluginCommandInfo[]> {
+    const { pluginCommands } = await settings.get();
+    const filter = (pluginCommands ?? "all").trim().toLowerCase();
+    if (filter === "none") return [];
+    const allow =
+      filter === "all" || filter === ""
+        ? null
+        : new Set(filter.split(",").map((entry) => entry.trim()).filter(Boolean));
+    try {
+      const { plugins } = await bb.sdk.plugins.list();
+      return plugins
+        .filter(
+          (plugin) =>
+            plugin.enabled &&
+            plugin.status === "running" &&
+            plugin.cliCommand !== null &&
+            plugin.id !== bb.pluginId &&
+            (allow === null || allow.has(plugin.id)),
+        )
+        .map((plugin) => ({
+          id: plugin.id,
+          name: plugin.cliCommand?.name ?? plugin.id,
+          summary: plugin.cliCommand?.summary ?? "",
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+    } catch (error) {
+      bb.log.warn(`could not list plugin commands: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
 
   // ---- thread-event notifications (feature-flagged by `notifications`) ----
   // Voice sessions get told when agent threads finish or fail. The frontend
@@ -553,6 +620,43 @@ export default async function plugin(bb: BbPluginApi) {
         await bb.sdk.threads.update({ threadId: str("thread_id"), title: str("title") });
         return "Thread renamed.";
       }
+      case "run_plugin_command": {
+        const requested = str("plugin_id");
+        const available = await exposedPluginCommands();
+        const command = available.find((c) => c.id === requested || c.name === requested);
+        if (!command) {
+          return `Plugin "${requested}" is not available. Available plugins: ${available.map((c) => c.id).join(", ") || "none"}.`;
+        }
+        const argv = Array.isArray(args.argv)
+          ? (args.argv as unknown[]).filter((v): v is string => typeof v === "string")
+          : [];
+        const response = await fetch(
+          `${bb.server.loopbackBaseUrl}/api/v1/plugins/${encodeURIComponent(command.id)}/cli`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              argv,
+              ...(context.threadId ? { threadId: context.threadId } : {}),
+              ...(context.projectId ? { projectId: context.projectId } : {}),
+            }),
+          },
+        );
+        const result = (await response.json().catch(() => null)) as {
+          exitCode?: number;
+          stdout?: string;
+          stderr?: string;
+          error?: string;
+        } | null;
+        if (!response.ok || result === null) {
+          return `Error running bb ${command.name}: HTTP ${response.status}${result?.error ? ` — ${result.error}` : ""}`;
+        }
+        const out = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+        if (result.exitCode !== 0) {
+          return truncate(`bb ${command.name} ${argv.join(" ")} failed (exit ${result.exitCode ?? "?"}):\n${out || "(no output)"}`);
+        }
+        return truncate(out || "(no output)");
+      }
       case "update_instructions": {
         const content = str("instructions");
         if (content.length > 20000) return "Error: instructions too long (max 20000 characters).";
@@ -682,10 +786,15 @@ export default async function plugin(bb: BbPluginApi) {
     async createCall({ sdp, threadId, projectId, nonce }) {
       const key = await apiKey();
       const { model, voice } = await settings.get();
+      const pluginCommands = await exposedPluginCommands();
+      const pluginSection =
+        pluginCommands.length === 0
+          ? ""
+          : `\n\nInstalled bb plugins contribute extra commands you can run with run_plugin_command:\n${pluginCommands.map((c) => `- ${c.id}: bb ${c.name} — ${c.summary}`).join("\n")}\nWhen unsure of a plugin's subcommands, run it with argv ["--help"] first. Summarize command output aloud in a sentence or two; never read raw JSON or long output verbatim.`;
       const session = {
         type: "realtime",
         model,
-        instructions: `${activePrompt()}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}. Call get_context for fresh context — the user navigates while talking.`,
+        instructions: `${activePrompt()}${pluginSection}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}. Call get_context for fresh context — the user navigates while talking.`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -693,7 +802,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
           output: { voice },
         },
-        tools: toolSchemas(),
+        tools: toolSchemas(pluginCommands),
       };
       const form = new FormData();
       form.set("sdp", sdp);
@@ -715,8 +824,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async getTools() {
       const local = new Set(["set_composer_text", "append_composer_text"]);
+      const pluginCommands = await exposedPluginCommands();
       return {
-        tools: toolSchemas().map((tool) => ({
+        tools: toolSchemas(pluginCommands).map((tool) => ({
           name: tool.name,
           description: tool.description ?? "",
           parameters: "parameters" in tool && tool.parameters ? JSON.stringify(tool.parameters) : null,

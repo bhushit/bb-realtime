@@ -44,6 +44,8 @@ The button has three states:
 - *"Stop that thread"* / *"archive it"* / *"rename it to 'CI fix'"*
 - *"Type a prompt for me: refactor the session store to…"* — writes into
   your composer so you can review and hit send yourself
+- *"What automations do I have?"* — runs other installed plugins' `bb`
+  commands (curate which with the `pluginCommands` setting)
 
 The agent always knows which thread and project you're looking at — even as
 you navigate mid-conversation — so "this thread" just works.
@@ -70,6 +72,7 @@ skill.
 | `openaiApiKey` | — | Secret; stored in bb's plugin secret store. Falls back to `OPENAI_API_KEY` in the bb server's environment. |
 | `model` | `gpt-realtime-2` | OpenAI Realtime model |
 | `voice` | `marin` | Assistant voice |
+| `pluginCommands` | `all` | Which installed plugins' `bb` commands the voice agent may run via its `run_plugin_command` tool: `all`, `none`, or comma-separated plugin ids (e.g. `automation,connect`) |
 
 Change with `bb plugin config handsfree set <key> <value>`, then
 `bb plugin reload aide`.
