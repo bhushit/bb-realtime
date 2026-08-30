@@ -222,7 +222,7 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     ...pluginTool,
     { type: "function", name: "get_context", description: "Get the user's current bb context: the thread and project currently in view, including the thread's status and latest assistant output." },
     { type: "function", name: "list_projects", description: "List bb projects with their ids and names." },
-    { type: "function", name: "list_live_threads", description: "List the threads that are live right now (running, starting, provisioning, or waiting), like the Live threads section in the bb sidebar." },
+    { type: "function", name: "list_live_threads", description: "List the threads in the Live threads sidebar section: running right now (active/starting/provisioning/waiting), plus threads that finished within the last 30 minutes (status 'recently-finished'). Only threads without a 'recently-finished' status are still working." },
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
     { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
@@ -460,20 +460,31 @@ export default async function plugin(bb: BbPluginApi) {
     "host-reconnecting",
   ]);
 
-  /** Threads that are live right now, newest activity first, with project names. */
+  // Matches the sidebar's Live threads definition (active-threads plugin):
+  // running now, or finished within this window (shown as "recently-finished").
+  const RECENT_WINDOW_MS = 30 * 60_000;
+
+  /** Threads that are live right now or finished recently, newest first. */
   async function liveThreads() {
     const [threads, projects] = await Promise.all([
       bb.sdk.threads.list({ limit: 200 }),
       bb.sdk.projects.list({ includePersonal: true }),
     ]);
     const projectNames = new Map(projects.map((p) => [p.id, p.name]));
+    const now = Date.now();
     return threads
-      .filter((t) => !t.archivedAt && LIVE_STATUSES.has(t.runtime.displayStatus))
+      .filter((t) => {
+        if (t.archivedAt) return false;
+        if (LIVE_STATUSES.has(t.runtime.displayStatus)) return true;
+        return now - t.updatedAt <= RECENT_WINDOW_MS;
+      })
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .map((t) => ({
         id: t.id,
         title: t.title ?? t.titleFallback ?? "(untitled)",
-        status: t.runtime.displayStatus,
+        status: LIVE_STATUSES.has(t.runtime.displayStatus)
+          ? t.runtime.displayStatus
+          : `recently-finished (${t.runtime.displayStatus}, ${relativeTime(t.updatedAt)})`,
         project: projectNames.get(t.projectId) ?? t.projectId,
         projectId: t.projectId,
         providerId: t.providerId,
@@ -688,7 +699,7 @@ export default async function plugin(bb: BbPluginApi) {
     name: "handsfree",
     summary: "Handsfree voice plugin: inspect live threads and voice sessions",
     commands: [
-      { name: "live", summary: "List threads that are live right now (running/starting/waiting). Add --json for machine output.", usage: "bb handsfree live [--json]" },
+      { name: "live", summary: "List live threads: running now plus recently finished (last 30 min), like the sidebar. Add --json for machine output.", usage: "bb handsfree live [--json]" },
       { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb handsfree read <thread-id>" },
       { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb handsfree usage [--days N] [--json]" },
       { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb handsfree stop" },
