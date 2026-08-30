@@ -11,6 +11,7 @@ import {
   experimental_useSidebarThreadActions,
   useBbContext,
   useComposer,
+  useComposerView,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
@@ -53,6 +54,14 @@ function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const { threadId, projectId } = useBbContext();
+  // The route has no thread/project on the New thread screen, but the
+  // composer scope knows we're composing a new thread and which project is
+  // selected — without this the agent sees an empty context there.
+  const { scope } = useComposerView();
+  const onNewThreadScreen = scope.kind === "new-thread";
+  const scopeProjectId =
+    scope.kind === "new-thread" || scope.kind === "side-chat" ? scope.projectId : null;
+  const effectiveProjectId = projectId ?? scopeProjectId;
   const sidebarActions = experimental_useSidebarThreadActions();
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
 
@@ -82,7 +91,7 @@ function AideVoiceButton() {
   useEffect(() => {
     voiceAgent.bind({
       rpc,
-      context: { threadId, projectId },
+      context: { threadId, projectId: effectiveProjectId, onNewThreadScreen },
       composer: {
         setText: (text) => composer.setText(text),
         updateText: (updater) => composer.updateText(updater),
@@ -93,7 +102,7 @@ function AideVoiceButton() {
           focusPrompt: true,
         }),
     });
-  }, [rpc, composer, threadId, projectId, sidebarActions]);
+  }, [rpc, composer, threadId, effectiveProjectId, onNewThreadScreen, sidebarActions]);
 
   const live = state === "live";
   const muted = state === "muted";

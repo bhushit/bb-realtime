@@ -19,6 +19,8 @@ export const rpcContract = defineRpcContract({
         sdp: z.string().min(1),
         threadId: z.string().nullable(),
         projectId: z.string().nullable(),
+        /** True when the user is on the New thread screen (no thread yet). */
+        onNewThreadScreen: z.boolean().optional(),
         /** Unique per call; broadcast so every other window ends its session. */
         nonce: z.string().min(1),
       })
@@ -145,6 +147,7 @@ export const rpcContract = defineRpcContract({
         args: z.record(z.string(), z.unknown()),
         threadId: z.string().nullable(),
         projectId: z.string().nullable(),
+        onNewThreadScreen: z.boolean().optional(),
       })
       .strict(),
     output: z.object({ output: z.string() }).strict(),
@@ -539,7 +542,7 @@ export default async function plugin(bb: BbPluginApi) {
   async function runTool(
     name: string,
     args: Record<string, unknown>,
-    context: { threadId: string | null; projectId: string | null },
+    context: { threadId: string | null; projectId: string | null; onNewThreadScreen?: boolean },
   ): Promise<string> {
     const str = (key: string): string => {
       const value = args[key];
@@ -549,6 +552,11 @@ export default async function plugin(bb: BbPluginApi) {
     switch (name) {
       case "get_context": {
         const result: Record<string, unknown> = { threadId: context.threadId, projectId: context.projectId };
+        if (!context.threadId && context.onNewThreadScreen) {
+          result.view = "new-thread";
+          result.note =
+            "The user is on the New thread screen: no thread exists yet — they are composing the prompt for one. The project shown is the one selected in the composer. Help via set_composer_text/append_composer_text or start_thread; do not look for a current thread.";
+        }
         if (context.threadId) {
           const thread = await bb.sdk.threads.get({ threadId: context.threadId });
           result.thread = describeThread(thread);
@@ -794,7 +802,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async createCall({ sdp, threadId, projectId, nonce }) {
+    async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce }) {
       const key = await apiKey();
       const { model, voice } = await settings.get();
       const pluginCommands = await exposedPluginCommands();
@@ -805,7 +813,7 @@ export default async function plugin(bb: BbPluginApi) {
       const session = {
         type: "realtime",
         model,
-        instructions: `${activePrompt()}${pluginSection}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}. Call get_context for fresh context — the user navigates while talking.`,
+        instructions: `${activePrompt()}${pluginSection}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -917,10 +925,10 @@ export default async function plugin(bb: BbPluginApi) {
       );
       return { ok: true as const };
     },
-    async runTool({ name, args, threadId, projectId }) {
+    async runTool({ name, args, threadId, projectId, onNewThreadScreen }) {
       bb.log.info(`voice tool: ${name} ${JSON.stringify(args).slice(0, 300)}`);
       try {
-        const output = await runTool(name, args, { threadId, projectId });
+        const output = await runTool(name, args, { threadId, projectId, onNewThreadScreen });
         return { output };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

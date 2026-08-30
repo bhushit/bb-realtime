@@ -25,7 +25,12 @@ interface ComposerBinding {
 
 export interface Bindings {
   rpc: RpcClient;
-  context: { threadId: string | null; projectId: string | null };
+  context: {
+    threadId: string | null;
+    projectId: string | null;
+    /** True when the user is on the New thread screen (no thread exists yet). */
+    onNewThreadScreen: boolean;
+  };
   composer: ComposerBinding;
   openNewThread: (projectId: string | null) => void;
 }
