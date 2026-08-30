@@ -2,6 +2,10 @@
   "name": "bb-plugin-realtime",
   "version": "0.1.0",
   "type": "module",
+  "scripts": {
+    "test": "node --test audio-devices.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "engines": {
     "bb": ">=0.40",
     "bbPluginSdk": ">=0.4.21"

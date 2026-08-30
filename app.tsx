@@ -16,7 +16,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
-import { SessionsPanel } from "./sessions-panel";
+import { AudioDeviceSettings, SessionsPanel } from "./sessions-panel";
 import { cn } from "@/lib/utils";
 import "./app.css";
 
@@ -160,6 +160,12 @@ function SidebarLiveIndicator() {
 }
 
 export default definePluginApp((app) => {
+  app.slots.settingsSection({
+    id: "audio-devices",
+    title: "Audio devices",
+    description: "Choose the microphone and speaker used by new Realtime voice sessions.",
+    component: AudioDeviceSettings,
+  });
   app.composer.customize({
     id: "aide-voice",
     actions: [{ id: "voice-agent", component: AideVoiceButton }],

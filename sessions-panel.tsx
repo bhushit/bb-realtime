@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { DEFAULT_MODEL, MODEL_OPTIONS, type RealtimeModel } from "./models";
 import { voiceAgent } from "./voice-agent";
+import { deviceDisplayLabel } from "./audio-devices";
 import { cn } from "@/lib/utils";
 
 interface SessionRow {
@@ -86,6 +87,147 @@ function ModelPicker() {
         ))}
       </select>
     </label>
+  );
+}
+
+export function AudioDeviceSettings() {
+  const preferences = useSyncExternalStore(
+    voiceAgent.subscribe,
+    voiceAgent.getAudioPreferences,
+  );
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const supportsSpeakerSelection =
+    typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+
+  const refresh = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setDeviceError("Audio device discovery is not supported in this browser.");
+      setLoading(false);
+      return;
+    }
+    try {
+      setDevices(await navigator.mediaDevices.enumerateDevices());
+      setDeviceError(null);
+    } catch (cause) {
+      setDeviceError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
+  }, [refresh]);
+
+  const inputs = devices.filter(
+    (device) => device.kind === "audioinput" && device.deviceId,
+  );
+  const outputs = devices.filter(
+    (device) => device.kind === "audiooutput" && device.deviceId,
+  );
+  const labelsHidden = inputs.length > 0 && inputs.every((device) => !device.label);
+
+  async function allowAccess() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      for (const track of stream.getTracks()) track.stop();
+      await refresh();
+    } catch (cause) {
+      setDeviceError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  function change(kind: "input" | "output", deviceId: string) {
+    voiceAgent.setAudioPreferences({
+      ...preferences,
+      [kind === "input" ? "inputDeviceId" : "outputDeviceId"]: deviceId,
+    });
+    toast.success("Audio device saved — applies to the next voice session");
+  }
+
+  return (
+    <details className="rounded-lg border border-border bg-card">
+      <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-foreground">
+        Audio devices
+        <span className="ml-2 text-xs font-normal text-muted-foreground">
+          microphone and speaker
+        </span>
+      </summary>
+      <div className="grid gap-3 border-t border-border/50 p-3 sm:grid-cols-2">
+        <label className="space-y-1 text-xs text-muted-foreground">
+          <span>Microphone</span>
+          <select
+            value={preferences.inputDeviceId}
+            disabled={loading}
+            onChange={(event) => change("input", event.target.value)}
+            className="block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+          >
+            <option value="">System default</option>
+            {preferences.inputDeviceId && !inputs.some((device) => device.deviceId === preferences.inputDeviceId) ? (
+              <option value={preferences.inputDeviceId}>Unavailable device</option>
+            ) : null}
+            {inputs.map((device, index) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {deviceDisplayLabel(device, index)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs text-muted-foreground">
+          <span>Speaker</span>
+          <select
+            value={supportsSpeakerSelection ? preferences.outputDeviceId : ""}
+            disabled={loading || !supportsSpeakerSelection}
+            onChange={(event) => change("output", event.target.value)}
+            className="block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60"
+          >
+            <option value="">System default</option>
+            {preferences.outputDeviceId && !outputs.some((device) => device.deviceId === preferences.outputDeviceId) ? (
+              <option value={preferences.outputDeviceId}>Unavailable device</option>
+            ) : null}
+            {outputs.map((device, index) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {deviceDisplayLabel(device, index)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="sm:col-span-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>
+            {!supportsSpeakerSelection
+              ? "This browser only supports the system-default speaker."
+              : labelsHidden
+                ? "Allow microphone access to reveal device names."
+                : "Selections are stored in this browser and apply to new sessions."}
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
+            {labelsHidden ? (
+              <button
+                type="button"
+                onClick={() => void allowAccess()}
+                className="rounded-md border border-border px-2 py-1 hover:text-foreground"
+              >
+                Allow access
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="rounded-md border border-border px-2 py-1 hover:text-foreground"
+            >
+              Refresh
+            </button>
+          </span>
+        </div>
+        {deviceError ? (
+          <p className="sm:col-span-2 text-xs text-destructive">{deviceError}</p>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -476,6 +618,7 @@ export function SessionsPanel() {
                 <ModelPicker />
               </span>
             </div>
+            <AudioDeviceSettings />
             <PromptEditor />
             <ToolsSection />
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">

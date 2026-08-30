@@ -71,6 +71,12 @@ skill.
 | `model` | `gpt-realtime-2` | OpenAI Realtime model |
 | `voice` | `marin` | Assistant voice |
 
+Microphone and speaker choices are available under **Audio devices** in the
+Realtime plugin settings and on the Realtime page. They are stored in the
+current browser and apply to the next voice session. If a selected device is
+disconnected, Realtime falls back to the system default. Speaker selection
+depends on browser support for audio output routing.
+
 Change with `bb plugin config realtime set <key> <value>`, then
 `bb plugin reload aide`.
 
