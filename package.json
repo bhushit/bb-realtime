@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test audio-devices.test.ts",
+    "test": "node --test audio-devices.test.ts voice-agent.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

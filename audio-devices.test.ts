@@ -4,7 +4,6 @@ import {
   audioCaptureConstraint,
   deviceDisplayLabel,
   readAudioDevicePreferences,
-  resolveDeviceId,
   shouldRetryWithDefaultDevice,
   writeAudioDevicePreferences,
 } from "./audio-devices.ts";
@@ -17,15 +16,6 @@ test("requests a saved microphone by exact device id", () => {
   assert.deepEqual(audioCaptureConstraint("input-123"), {
     deviceId: { exact: "input-123" },
   });
-});
-
-test("falls back to the system default when a saved device disappears", () => {
-  const devices = [
-    { deviceId: "input-456", kind: "audioinput" as const, label: "Desk Mic" },
-  ];
-
-  assert.equal(resolveDeviceId("input-123", devices), "");
-  assert.equal(resolveDeviceId("input-456", devices), "input-456");
 });
 
 test("provides readable labels before browser permission reveals device names", () => {
@@ -46,15 +36,29 @@ test("persists browser-local audio preferences", () => {
     setItem: (key: string, value: string) => values.set(key, value),
   };
 
-  writeAudioDevicePreferences(storage, {
+  assert.equal(writeAudioDevicePreferences(storage, {
     inputDeviceId: "input-123",
     outputDeviceId: "output-456",
-  });
+  }), true);
 
   assert.deepEqual(readAudioDevicePreferences(storage), {
     inputDeviceId: "input-123",
     outputDeviceId: "output-456",
   });
+});
+
+test("keeps storage failures from breaking in-memory device selection", () => {
+  const storage = {
+    getItem: () => null,
+    setItem: () => {
+      throw new DOMException("Storage denied", "SecurityError");
+    },
+  };
+
+  assert.equal(writeAudioDevicePreferences(storage, {
+    inputDeviceId: "input-123",
+    outputDeviceId: "output-456",
+  }), false);
 });
 
 test("ignores invalid persisted audio preferences", () => {

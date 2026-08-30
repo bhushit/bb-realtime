@@ -18,6 +18,7 @@ import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { AudioDeviceSettings, SessionsPanel } from "./sessions-panel";
 import { cn } from "@/lib/utils";
+import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import "./app.css";
 
 
@@ -184,6 +185,9 @@ export default definePluginApp((app) => {
   app.contentScripts.register({
     id: "aide-voice-lifecycle",
     mount({ signal }) {
+      window.addEventListener("storage", (event) => {
+        if (event.key === AUDIO_DEVICE_STORAGE_KEY) voiceAgent.refreshAudioPreferences();
+      }, { signal });
       signal.addEventListener("abort", () => voiceAgent.stop());
       return () => voiceAgent.stop();
     },

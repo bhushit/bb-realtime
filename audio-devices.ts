@@ -14,7 +14,7 @@ interface PreferenceStorage {
   setItem(key: string, value: string): unknown;
 }
 
-const STORAGE_KEY = "bb-realtime.audio-devices";
+export const AUDIO_DEVICE_STORAGE_KEY = "bb-realtime.audio-devices";
 const DEFAULT_PREFERENCES: AudioDevicePreferences = {
   inputDeviceId: "",
   outputDeviceId: "",
@@ -22,7 +22,7 @@ const DEFAULT_PREFERENCES: AudioDevicePreferences = {
 
 export function readAudioDevicePreferences(storage: PreferenceStorage): AudioDevicePreferences {
   try {
-    const parsed = JSON.parse(storage.getItem(STORAGE_KEY) ?? "null") as Record<string, unknown> | null;
+    const parsed = JSON.parse(storage.getItem(AUDIO_DEVICE_STORAGE_KEY) ?? "null") as Record<string, unknown> | null;
     return {
       inputDeviceId: typeof parsed?.inputDeviceId === "string" ? parsed.inputDeviceId : "",
       outputDeviceId: typeof parsed?.outputDeviceId === "string" ? parsed.outputDeviceId : "",
@@ -35,20 +35,17 @@ export function readAudioDevicePreferences(storage: PreferenceStorage): AudioDev
 export function writeAudioDevicePreferences(
   storage: PreferenceStorage,
   preferences: AudioDevicePreferences,
-): void {
-  storage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+): boolean {
+  try {
+    storage.setItem(AUDIO_DEVICE_STORAGE_KEY, JSON.stringify(preferences));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function audioCaptureConstraint(deviceId: string): true | MediaTrackConstraints {
   return deviceId ? { deviceId: { exact: deviceId } } : true;
-}
-
-export function resolveDeviceId(
-  preferredId: string,
-  devices: readonly AudioDeviceLike[],
-): string {
-  if (!preferredId) return "";
-  return devices.some((device) => device.deviceId === preferredId) ? preferredId : "";
 }
 
 export function shouldRetryWithDefaultDevice(error: unknown): boolean {

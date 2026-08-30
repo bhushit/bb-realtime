@@ -10,7 +10,7 @@ import {
   shouldRetryWithDefaultDevice,
   writeAudioDevicePreferences,
   type AudioDevicePreferences,
-} from "./audio-devices";
+} from "./audio-devices.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 
@@ -35,6 +35,14 @@ interface SessionHandle {
   stream: MediaStream;
   audio: HTMLAudioElement;
   dc: RTCDataChannel | null;
+}
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 /** Wait for ICE gathering to finish (bounded) so we send a complete offer. */
@@ -65,10 +73,11 @@ export class VoiceAgent {
   private listeners = new Set<() => void>();
   private bindings: Bindings | null = null;
   private nonce: string | null = null;
+  private storage = browserStorage();
   private audioPreferences: AudioDevicePreferences =
-    typeof localStorage === "undefined"
-      ? { inputDeviceId: "", outputDeviceId: "" }
-      : readAudioDevicePreferences(localStorage);
+    this.storage
+      ? readAudioDevicePreferences(this.storage)
+      : { inputDeviceId: "", outputDeviceId: "" };
   /** Serializes tool executions so outputs are submitted in call order. */
   private toolChain: Promise<void> = Promise.resolve();
   /** True while the model is generating a response (response.created→done). */
@@ -106,9 +115,18 @@ export class VoiceAgent {
 
   setAudioPreferences(next: AudioDevicePreferences) {
     this.audioPreferences = { ...next };
-    if (typeof localStorage !== "undefined") {
-      writeAudioDevicePreferences(localStorage, this.audioPreferences);
-    }
+    if (this.storage) writeAudioDevicePreferences(this.storage, this.audioPreferences);
+    this.emitChange();
+  }
+
+  refreshAudioPreferences() {
+    if (!this.storage) return;
+    const next = readAudioDevicePreferences(this.storage);
+    if (
+      next.inputDeviceId === this.audioPreferences.inputDeviceId &&
+      next.outputDeviceId === this.audioPreferences.outputDeviceId
+    ) return;
+    this.audioPreferences = next;
     this.emitChange();
   }
 
@@ -321,6 +339,8 @@ export class VoiceAgent {
       const pc = new RTCPeerConnection();
       const audio = new Audio();
       audio.autoplay = true;
+      const session: SessionHandle = { pc, stream, audio, dc: null };
+      this.session = session;
       const setSinkId = (audio as HTMLAudioElement & {
         setSinkId?: (deviceId: string) => Promise<void>;
       }).setSinkId;
@@ -328,12 +348,12 @@ export class VoiceAgent {
         try {
           await setSinkId.call(audio, this.audioPreferences.outputDeviceId);
         } catch {
+          if (this.session?.pc !== pc) return;
           this.setAudioPreferences({ ...this.audioPreferences, outputDeviceId: "" });
           toast.info("Aide: selected speaker unavailable; using system default");
         }
       }
-      const session: SessionHandle = { pc, stream, audio, dc: null };
-      this.session = session;
+      if (this.session?.pc !== pc) return;
 
       for (const track of stream.getTracks()) pc.addTrack(track, stream);
       pc.ontrack = (event) => {
