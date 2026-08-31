@@ -14,7 +14,7 @@
     "name": "Handsfree",
     "description": "Hands-free voice operator for bb: talk to an agent that focuses threads, sends messages, starts work, and shows diffs.",
     "branding": {
-      "icon": "AudioLines"
+      "icon": "./assets/icon.svg"
     },
     "skills": [],
     "server": "./server.ts",
