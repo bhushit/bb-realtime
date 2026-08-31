@@ -15,6 +15,7 @@ import {
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
+import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { AudioDeviceSettings, SessionsPanel } from "./sessions-panel";
@@ -144,7 +145,81 @@ function AideVoiceButton() {
   );
 }
 
-/** Trailing accessory on the Aide sidebar row: shows when a call is on. */
+/**
+ * Persistent voice bar pinned to the top of the sidebar thread area (between
+ * the plugin nav rows and the Threads list). State-driven, so every button
+ * reflects the live call — the reason we use `experimental_threadList` rather
+ * than the state-blind footer-action slot.
+ */
+function SidebarVoiceBar() {
+  const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const live = state === "live";
+  const muted = state === "muted";
+  const active = live || muted;
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 border-b border-border bg-background px-2 py-1.5">
+      <button
+        type="button"
+        aria-label={active ? "Stop Aide voice agent" : "Start Aide voice agent"}
+        title={active ? "Stop Aide" : "Talk to Aide"}
+        onClick={() => voiceAgent.toggle()}
+        className={cn(
+          "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors",
+          state === "idle" &&
+            "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+          state === "connecting" && "animate-pulse border-primary/50 text-primary",
+          live && "border-primary bg-primary/15 text-primary",
+          muted && "border-primary/40 bg-primary/5 text-primary/60",
+        )}
+      >
+        <WaveformIcon live={live} />
+        {state === "idle"
+          ? "Talk to Aide"
+          : state === "connecting"
+            ? "Connecting…"
+            : muted
+              ? "Muted"
+              : "Live"}
+      </button>
+      {active ? (
+        <button
+          type="button"
+          aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
+          title={muted ? "Unmute" : "Mute"}
+          onClick={() => voiceAgent.toggleMute()}
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors",
+            muted
+              ? "border-destructive bg-destructive/15 text-destructive"
+              : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+        >
+          <MicIcon slashed={muted} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Sidebar thread list with the voice bar above BB's own list. The bar is a
+ * fixed-height flex child; `Original` gets the remaining height in a scrollable
+ * box (`min-h-0` lets it shrink so the scroll region is bounded, not overlapping
+ * the bar). `overflow-y-auto` — not `hidden` — so a list that scrolls via its
+ * parent still scrolls.
+ */
+function ThreadListWithVoiceBar({ Original }: PluginThreadListProps) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <SidebarVoiceBar />
+      <div className="relative min-h-0 flex-1 overflow-y-auto pb-6">
+        <Original />
+      </div>
+    </div>
+  );
+}
+
+/** Trailing accessory on the Aide sidebar row: a live indicator (display only). */
 function SidebarLiveIndicator() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   if (state === "idle") return null;
@@ -188,6 +263,19 @@ export default definePluginApp((app) => {
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
   });
+  // --- Global surface trial: multiple always-reachable triggers for the same
+  // singleton call. All are pure toggles; the composer button owns the binding.
+  // Persistent voice bar above the Threads list. A component slot, so buttons
+  // reflect live call state (unlike the footer-action / command-palette slots).
+  // Optional: a voice bar above the thread list, for anyone who wants an
+  // always-visible control. Off by default is not possible (registering
+  // activates it), but users can pin BB's list under Settings → Appearance.
+  app.slots.experimental_threadList({
+    id: "voice-bar",
+    title: "Handsfree voice bar",
+    description: "Adds a persistent voice control bar above the thread list.",
+    component: ThreadListWithVoiceBar,
+  });
   // The session deliberately outlives any component, so tie it to the plugin
   // frontend generation instead: on reload/disable the old bundle's singleton
   // would otherwise keep a zombie WebRTC call no button controls.
@@ -197,6 +285,10 @@ export default definePluginApp((app) => {
       window.addEventListener("storage", (event) => {
         if (event.key === AUDIO_DEVICE_STORAGE_KEY) voiceAgent.refreshAudioPreferences();
       }, { signal });
+      // Release the mic synchronously before the page tears down. Without this,
+      // a hard reload (Cmd+R) leaves the previous page holding the input device,
+      // so the fresh page enumerates zero microphones until the OS reclaims it.
+      window.addEventListener("pagehide", () => voiceAgent.stop(), { signal });
       signal.addEventListener("abort", () => voiceAgent.stop());
       return () => voiceAgent.stop();
     },
