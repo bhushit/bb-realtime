@@ -51,6 +51,15 @@ function MicIcon({ slashed }: { slashed: boolean }) {
   );
 }
 
+/** A rounded stop square — ends the voice session. */
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="size-3.5" fill="currentColor" aria-hidden>
+      <rect x="4" y="4" width="8" height="8" rx="1.6" />
+    </svg>
+  );
+}
+
 function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
@@ -65,6 +74,7 @@ function AideVoiceButton() {
   const effectiveProjectId = projectId ?? scopeProjectId;
   const sidebarActions = experimental_useSidebarThreadActions();
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
 
   // Global exclusivity: when any window starts a call, all others stop theirs.
   useRealtime("voice-call", (payload) => {
@@ -107,41 +117,91 @@ function AideVoiceButton() {
 
   const live = state === "live";
   const muted = state === "muted";
-  return (
-    <>
-      {live || muted ? (
+
+  // During a call, one segmented pill: mute · a live activity waveform in the
+  // middle · stop. The waveform animates and tints by who has the floor — you
+  // (primary) vs Aide (amber) — so it feels like a live conversation, driven
+  // purely by the data-channel activity signals (no audio analysis).
+  if (live || muted) {
+    // Aide can still be talking while your mic is muted, so the middle
+    // indicator tracks conversation activity independent of mute. Mute is shown
+    // by the slashed mic on the left button, not by graying this out.
+    const speaking = activity === "aide";
+    const listening = activity === "you"; // never true while muted (mic is off)
+    const middleLabel = speaking
+      ? "Aide speaking…"
+      : listening
+        ? "Listening…"
+        : muted
+          ? "Muted"
+          : "Connected";
+    return (
+      <div
+        className={cn(
+          "flex h-7 shrink-0 items-center overflow-hidden rounded-full border",
+          muted ? "border-primary/40 bg-primary/5" : "border-primary bg-primary/15",
+        )}
+      >
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
           title={muted ? "Unmute" : "Mute"}
           onClick={() => voiceAgent.toggleMute()}
           className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+            "flex size-7 items-center justify-center transition-colors",
             muted
-              ? "border-destructive bg-destructive/15 text-destructive"
-              : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+              ? "text-destructive hover:bg-destructive/10"
+              : "text-primary hover:bg-primary/10",
           )}
         >
           <MicIcon slashed={muted} />
         </button>
-      ) : null}
-      <button
-        type="button"
-        aria-label={live || muted ? "Stop Aide voice agent" : "Start Aide voice agent"}
-        title={live || muted ? "Stop Aide" : "Talk to Aide"}
-        onClick={() => voiceAgent.toggle()}
-        className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
-          state === "idle" &&
-            "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-          state === "connecting" && "animate-pulse border-primary/50 text-primary",
-          live && "border-primary bg-primary/15 text-primary",
-          muted && "border-primary/40 bg-primary/5 text-primary/60",
-        )}
-      >
-        <WaveformIcon live={live} />
-      </button>
-    </>
+        <span className="h-4 w-px bg-primary/25" />
+        <span
+          className={cn(
+            "flex h-7 items-center justify-center px-2 transition-colors",
+            speaking
+              ? "text-amber-400"
+              : listening
+                ? "text-primary"
+                : muted
+                  ? "text-primary/40"
+                  : "text-primary/50",
+          )}
+          title={middleLabel}
+          aria-label={middleLabel}
+        >
+          <WaveformIcon live={speaking || listening} />
+        </span>
+        <span className="h-4 w-px bg-primary/25" />
+        <button
+          type="button"
+          aria-label="Stop Aide voice session"
+          title="Stop"
+          onClick={() => voiceAgent.stop()}
+          className="flex size-7 items-center justify-center text-primary transition-colors hover:bg-destructive/15 hover:text-destructive"
+        >
+          <StopIcon />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label="Start Aide voice agent"
+      title="Talk to Aide"
+      onClick={() => voiceAgent.toggle()}
+      className={cn(
+        "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+        state === "connecting"
+          ? "animate-pulse border-primary/50 text-primary"
+          : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      <WaveformIcon live={false} />
+    </button>
   );
 }
 

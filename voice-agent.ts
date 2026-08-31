@@ -15,6 +15,8 @@ import {
 } from "./audio-devices.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
+/** Who currently has the floor during a live call, for the "listening" UI. */
+export type VoiceActivity = "you" | "aide" | "idle";
 
 interface RpcClient {
   call: ReturnType<typeof useRpc<typeof rpcContract>>["call"];
@@ -97,6 +99,12 @@ export class VoiceAgent {
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /** True between VAD speech_started and speech_stopped. */
   private userSpeaking = false;
+  /**
+   * True while Aide's audio is actually playing — tracked from the WebRTC
+   * `output_audio_buffer.started/stopped/cleared` events, NOT `responseActive`
+   * (which ends at generation done, well before playback finishes).
+   */
+  private assistantSpeaking = false;
   /** Aborts a session that never reaches "live", so it can't hang connecting. */
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -106,6 +114,37 @@ export class VoiceAgent {
   };
 
   readonly getState = (): VoiceState => this.state;
+
+  /**
+   * Who is talking right now, from the data-channel signals we already track
+   * (VAD for the user, response lifecycle for Aide). Deliberately no audio
+   * analysis — it stays reliable and never touches the audio pipeline. The
+   * user takes precedence so a barge-in reads as "you".
+   */
+  readonly getActivity = (): VoiceActivity => {
+    if (this.state !== "live" && this.state !== "muted") return "idle";
+    if (this.userSpeaking) return "you";
+    if (this.assistantSpeaking) return "aide";
+    return "idle";
+  };
+
+  private setUserSpeaking(value: boolean) {
+    if (this.userSpeaking === value) return;
+    this.userSpeaking = value;
+    this.emitChange();
+  }
+
+  private setAssistantSpeaking(value: boolean) {
+    if (this.assistantSpeaking === value) return;
+    this.assistantSpeaking = value;
+    this.emitChange();
+  }
+
+  private setResponseActive(value: boolean) {
+    if (this.responseActive === value) return;
+    this.responseActive = value;
+    this.emitChange();
+  }
 
   readonly getAudioPreferences = (): AudioDevicePreferences => this.audioPreferences;
 
@@ -261,7 +300,7 @@ export class VoiceAgent {
     if (!session || (this.state !== "live" && this.state !== "muted")) return;
     for (const track of session.stream.getAudioTracks()) track.enabled = !muted;
     this.log(muted ? "muted" : "unmuted");
-    this.userSpeaking = false; // a muted mic can't be mid-utterance
+    this.setUserSpeaking(false); // a muted mic can't be mid-utterance
     this.setState(muted ? "muted" : "live");
   }
 
@@ -341,7 +380,7 @@ export class VoiceAgent {
       this.responsePending = true;
       return;
     }
-    this.responseActive = true;
+    this.setResponseActive(true);
     dc.send(JSON.stringify({ type: "response.create" }));
   }
 
@@ -352,12 +391,13 @@ export class VoiceAgent {
     this.session = null;
     this.nonce = null;
     this.toolChain = Promise.resolve();
-    this.responseActive = false;
+    this.setResponseActive(false);
+    this.setAssistantSpeaking(false);
     this.responsePending = false;
     this.pendingNotices.clear();
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = null;
-    this.userSpeaking = false;
+    this.setUserSpeaking(false);
     if (session) {
       session.dc?.close();
       session.pc.close();
@@ -550,11 +590,21 @@ export class VoiceAgent {
         }
         const type = String(event.type ?? "");
         if (type === "response.created") {
-          this.responseActive = true;
+          this.setResponseActive(true);
+        } else if (type === "output_audio_buffer.started") {
+          this.setAssistantSpeaking(true); // audio is now actually playing
+        } else if (
+          type === "output_audio_buffer.stopped" ||
+          type === "output_audio_buffer.cleared"
+        ) {
+          this.setAssistantSpeaking(false); // playback finished or interrupted
         } else if (type === "input_audio_buffer.speech_started") {
-          this.userSpeaking = true;
+          this.setUserSpeaking(true);
+          // Belt-and-suspenders: a new user turn always clears "Aide speaking",
+          // so a missed stopped/cleared event can never leave it stuck on.
+          this.setAssistantSpeaking(false);
         } else if (type === "input_audio_buffer.speech_stopped") {
-          this.userSpeaking = false;
+          this.setUserSpeaking(false);
           if (this.pendingNotices.size > 0) this.scheduleNoticeDrain();
         } else if (type === "response.function_call_arguments.done") {
           this.toolChain = this.toolChain
@@ -570,7 +620,7 @@ export class VoiceAgent {
           const text = String(event.transcript ?? "").trim();
           if (text) this.log("assistant", { text });
         } else if (type === "response.done") {
-          this.responseActive = false;
+          this.setResponseActive(false);
           if (this.responsePending) {
             this.responsePending = false;
             this.requestResponse(dc);
