@@ -5,7 +5,7 @@
 // and audio playback happen right here in the bb app); the backend performs
 // the SDP exchange (it holds the API key) and executes bb tools via bb.sdk.
 // The session itself lives in voice-agent.ts and outlives any component.
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   definePluginApp,
   experimental_useSidebarThreadActions,
@@ -156,13 +156,13 @@ function AideVoiceButton() {
         <span
           className={cn(
             "flex h-7 items-center justify-center px-2 transition-colors",
-            muted
-              ? "text-muted-foreground/50"
-              : speaking
-                ? "text-[color:var(--success,#6faf76)]" // themed green for Aide
-                : listening
-                  ? "text-foreground"
-                  : "text-muted-foreground",
+            // Aide can still be talking while you're muted, so who's-speaking
+            // wins over the muted/quiet dim (mute is shown by the slashed mic).
+            speaking
+              ? "text-[color:var(--success,#6faf76)]" // themed green for Aide
+              : listening
+                ? "text-foreground"
+                : "text-muted-foreground/60",
           )}
           title={middleLabel}
           aria-label={middleLabel}
@@ -209,9 +209,31 @@ function AideVoiceButton() {
  */
 function SidebarVoiceBar() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
   const live = state === "live";
   const muted = state === "muted";
   const active = live || muted;
+  const speaking = activity === "aide";
+  const listening = activity === "you";
+  // Same neutral-chrome + activity-color scheme as the composer pill: color
+  // marks who has the floor, everything else stays theme-neutral.
+  const activityColor = speaking
+    ? "text-[color:var(--success,#6faf76)]" // Aide
+    : listening
+      ? "text-foreground" // you
+      : "text-muted-foreground";
+  const label =
+    state === "idle"
+      ? "Talk to Aide"
+      : state === "connecting"
+        ? "Connecting…"
+        : speaking
+          ? "Aide speaking…"
+          : listening
+            ? "Listening…"
+            : muted
+              ? "Muted"
+              : "Live";
   return (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-border bg-background px-2 py-1.5">
       <button
@@ -220,22 +242,17 @@ function SidebarVoiceBar() {
         title={active ? "Stop Aide" : "Talk to Aide"}
         onClick={() => voiceAgent.toggle()}
         className={cn(
-          "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors",
-          state === "idle" &&
-            "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-          state === "connecting" && "animate-pulse border-primary/50 text-primary",
-          live && "border-primary bg-primary/15 text-primary",
-          muted && "border-primary/40 bg-primary/5 text-primary/60",
+          "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium transition-colors",
+          active
+            ? "bg-accent"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          state === "connecting" && "animate-pulse",
         )}
       >
-        <WaveformIcon live={live} />
-        {state === "idle"
-          ? "Talk to Aide"
-          : state === "connecting"
-            ? "Connecting…"
-            : muted
-              ? "Muted"
-              : "Live"}
+        <span className={cn("flex items-center gap-1.5", active && activityColor)}>
+          <WaveformIcon live={speaking || listening} />
+          {label}
+        </span>
       </button>
       {active ? (
         <button
@@ -244,10 +261,10 @@ function SidebarVoiceBar() {
           title={muted ? "Unmute" : "Mute"}
           onClick={() => voiceAgent.toggleMute()}
           className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-md border transition-colors",
+            "flex size-7 shrink-0 items-center justify-center rounded-md border border-border transition-colors",
             muted
-              ? "border-destructive bg-destructive/15 text-destructive"
-              : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+              ? "text-destructive hover:bg-destructive/15"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
           <MicIcon slashed={muted} />
@@ -275,27 +292,52 @@ function ThreadListWithVoiceBar({ Original }: PluginThreadListProps) {
   );
 }
 
-/** Trailing accessory on the Aide sidebar row: a live indicator (display only). */
+function formatElapsed(ms: number): string {
+  const total = Math.floor(Math.max(0, ms) / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** Live call duration as m:ss, ticking each second; null when no live call. */
+function useCallElapsed(): string | null {
+  const startedAt = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getLiveStartedAt);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAt == null) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+  return startedAt == null ? null : formatElapsed(now - startedAt);
+}
+
+/** Trailing accessory on the Aide sidebar row: a live indicator with duration. */
 function SidebarLiveIndicator() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const elapsed = useCallElapsed();
   if (state === "idle") return null;
-  if (state === "muted") {
-    return (
-      <span className="flex items-center gap-1.5 text-xs text-destructive">
-        <span className="size-2 rounded-full bg-destructive/70" />
-        muted
-      </span>
-    );
-  }
+  const muted = state === "muted";
+  const connecting = state === "connecting";
   return (
-    <span className="flex items-center gap-1.5 text-xs text-primary">
+    <span
+      className="flex items-center gap-1.5 text-xs tabular-nums text-muted-foreground"
+      title={muted ? "Muted" : connecting ? "Connecting" : "Live"}
+    >
+      {/* The timer stays one neutral color (it's just call duration, not an
+          error). The dot carries the state: pulsing = connecting (in progress),
+          solid = live (established), solid red = muted. */}
       <span
         className={cn(
-          "size-2 rounded-full bg-primary",
-          state === "live" ? "animate-pulse" : "opacity-50",
+          "size-2 rounded-full",
+          connecting
+            ? "bg-primary animate-pulse"
+            : muted
+              ? "bg-destructive"
+              : "bg-primary",
         )}
       />
-      {state === "live" ? "live" : "\u2026"}
+      {connecting ? "\u2026" : elapsed ?? ""}
     </span>
   );
 }

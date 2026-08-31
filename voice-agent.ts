@@ -107,6 +107,8 @@ export class VoiceAgent {
   private assistantSpeaking = false;
   /** Aborts a session that never reaches "live", so it can't hang connecting. */
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the call first went live (ms), for elapsed-duration UI; null if not. */
+  private liveStartedAt: number | null = null;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -114,6 +116,9 @@ export class VoiceAgent {
   };
 
   readonly getState = (): VoiceState => this.state;
+
+  /** Epoch ms when the call went live, or null when not in a live/muted call. */
+  readonly getLiveStartedAt = (): number | null => this.liveStartedAt;
 
   /**
    * Who is talking right now, from the data-channel signals we already track
@@ -387,6 +392,7 @@ export class VoiceAgent {
   stop() {
     if (this.session) this.log("session.stopped");
     this.clearConnectWatchdog();
+    this.liveStartedAt = null;
     const session = this.session;
     this.session = null;
     this.nonce = null;
@@ -575,6 +581,7 @@ export class VoiceAgent {
       dc.onopen = () => {
         if (this.session?.pc === pc) {
           this.clearConnectWatchdog();
+          this.liveStartedAt = Date.now();
           this.setState("live");
           this.log("session.live");
           this.logDiag("conn.dc.open");
