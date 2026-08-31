@@ -118,10 +118,11 @@ function AideVoiceButton() {
   const live = state === "live";
   const muted = state === "muted";
 
-  // During a call, one segmented pill: mute · a live activity waveform in the
-  // middle · stop. The waveform animates and tints by who has the floor — you
-  // (primary) vs Aide (amber) — so it feels like a live conversation, driven
-  // purely by the data-channel activity signals (no audio analysis).
+  // During a call, one segmented pill with NEUTRAL chrome (border/icons use
+  // theme-neutral tokens so it reads well on any theme regardless of how bold
+  // its primary is). Color appears only on the middle waveform to signal who
+  // has the floor: you (bright foreground) vs Aide (primary). Driven purely by
+  // data-channel activity signals — no audio analysis.
   if (live || muted) {
     // Aide can still be talking while your mic is muted, so the middle
     // indicator tracks conversation activity independent of mute. Mute is shown
@@ -136,12 +137,7 @@ function AideVoiceButton() {
           ? "Muted"
           : "Connected";
     return (
-      <div
-        className={cn(
-          "flex h-7 shrink-0 items-center overflow-hidden rounded-full border",
-          muted ? "border-primary/40 bg-primary/5" : "border-primary bg-primary/15",
-        )}
-      >
+      <div className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
@@ -150,36 +146,36 @@ function AideVoiceButton() {
           className={cn(
             "flex size-7 items-center justify-center transition-colors",
             muted
-              ? "text-destructive hover:bg-destructive/10"
-              : "text-primary hover:bg-primary/10",
+              ? "text-destructive hover:bg-destructive/20"
+              : "text-muted-foreground hover:bg-background/50 hover:text-foreground",
           )}
         >
           <MicIcon slashed={muted} />
         </button>
-        <span className="h-4 w-px bg-primary/25" />
+        <span className="h-4 w-px bg-border" />
         <span
           className={cn(
             "flex h-7 items-center justify-center px-2 transition-colors",
-            speaking
-              ? "text-amber-400"
-              : listening
-                ? "text-primary"
-                : muted
-                  ? "text-primary/40"
-                  : "text-primary/50",
+            muted
+              ? "text-muted-foreground/50"
+              : speaking
+                ? "text-[color:var(--success,#6faf76)]" // themed green for Aide
+                : listening
+                  ? "text-foreground"
+                  : "text-muted-foreground",
           )}
           title={middleLabel}
           aria-label={middleLabel}
         >
           <WaveformIcon live={speaking || listening} />
         </span>
-        <span className="h-4 w-px bg-primary/25" />
+        <span className="h-4 w-px bg-border" />
         <button
           type="button"
           aria-label="Stop Aide voice session"
           title="Stop"
           onClick={() => voiceAgent.stop()}
-          className="flex size-7 items-center justify-center text-primary transition-colors hover:bg-destructive/15 hover:text-destructive"
+          className="flex size-7 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
         >
           <StopIcon />
         </button>
