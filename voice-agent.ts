@@ -15,7 +15,7 @@ import {
   writeAudioDevicePreferences,
   type AudioDevicePreferences,
 } from "./audio-devices.ts";
-import { clientId, realmId, identityTag } from "./client-identity.ts";
+import { clientId, realmId, identityTag, clientDescriptor } from "./client-identity.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 /** Who currently has the floor during a live call, for the "listening" UI. */
@@ -277,7 +277,7 @@ export class VoiceAgent {
 
   bind(bindings: Bindings) {
     this.bindings = bindings;
-    this.helloOnce();
+    this.helloOnce("composer");
   }
 
   /**
@@ -288,19 +288,22 @@ export class VoiceAgent {
    */
   bindFallback(bindings: Bindings) {
     if (!this.bindings) this.bindings = bindings;
-    this.helloOnce();
+    this.helloOnce("page");
   }
 
   /**
    * Announce this realm once it can talk to the backend, so every surface (even
    * idle ones that never start a call) leaves a durable record of its client +
-   * realm id. This is how we enumerate "which realms exist on which client".
+   * realm id, the device descriptor, and which surface it is. This is how we
+   * enumerate "which realms exist on which client, and what kind of device".
    */
-  private helloOnce() {
+  private helloOnce(surface: string) {
     if (this.helloed || !this.bindings) return;
     this.helloed = true;
     this.logDiag("client.hello", {
-      surface: typeof document !== "undefined" ? document.visibilityState : "unknown",
+      surface, // realm/usage: which surface this realm is (composer vs page)
+      visibility: typeof document !== "undefined" ? document.visibilityState : "unknown",
+      ...clientDescriptor, // client/device: platform, browser, runtime, ua, …
     });
   }
 

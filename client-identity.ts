@@ -49,3 +49,95 @@ export const realmId = randomId();
 export function identityTag(): { client: string; realm: string } {
   return { client: clientId, realm: realmId };
 }
+
+/**
+ * A human-recognizable description of THIS device/runtime, captured once (on
+ * `client.hello`) and keyed to `clientId`. Coarse label for scanning + the raw
+ * UA for truth (first-party, local-only). Best-effort: every field degrades to
+ * "" / a default when the API is missing (e.g. tests without navigator/window).
+ */
+export interface ClientDescriptor {
+  platform: string;
+  mobile: boolean;
+  browser: string;
+  displayMode: string;
+  runtime: string;
+  label: string;
+  ua: string;
+}
+
+function detectDisplayMode(): string {
+  try {
+    if (typeof window !== "undefined" && window.matchMedia) {
+      for (const mode of ["standalone", "fullscreen", "minimal-ui"]) {
+        if (window.matchMedia(`(display-mode: ${mode})`).matches) return mode;
+      }
+    }
+    // iOS Safari "Add to Home Screen" reports here rather than via matchMedia.
+    if (typeof navigator !== "undefined" && (navigator as { standalone?: boolean }).standalone) {
+      return "standalone";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "browser";
+}
+
+function describeClient(): ClientDescriptor {
+  const nav = typeof navigator !== "undefined" ? navigator : undefined;
+  const ua = nav?.userAgent ?? "";
+  const uaData = (nav as { userAgentData?: { platform?: string; mobile?: boolean; brands?: { brand: string }[] } } | undefined)
+    ?.userAgentData;
+
+  const platform =
+    uaData?.platform ||
+    (/\b(iPhone|iPad|iPod)\b/.test(ua)
+      ? "iOS"
+      : /\bMacintosh\b/.test(ua)
+        ? "macOS"
+        : /\bWindows\b/.test(ua)
+          ? "Windows"
+          : /\bAndroid\b/.test(ua)
+            ? "Android"
+            : /\bLinux\b/.test(ua)
+              ? "Linux"
+              : "");
+
+  const mobile = uaData?.mobile ?? /\b(Mobi|iPhone|iPod|Android)\b/.test(ua);
+
+  const brand = uaData?.brands?.map((b) => b.brand).find((b) => b && !/Not.?A.?Brand/i.test(b));
+  const browser =
+    brand ||
+    (/\bElectron\b/i.test(ua)
+      ? "Electron"
+      : /\bEdg\//.test(ua)
+        ? "Edge"
+        : /\bOPR\/|Opera\b/.test(ua)
+          ? "Opera"
+          : /\bFirefox\//.test(ua)
+            ? "Firefox"
+            : /\bCriOS\/|Chrome\//.test(ua)
+              ? "Chrome"
+              : /\bSafari\//.test(ua)
+                ? "Safari"
+                : "");
+
+  const displayMode = detectDisplayMode();
+
+  const win = typeof window !== "undefined" ? (window as { process?: { versions?: { electron?: string } }; webkit?: { messageHandlers?: unknown } }) : undefined;
+  const runtime =
+    /\bElectron\b/i.test(ua) || win?.process?.versions?.electron
+      ? "electron"
+      : win?.webkit?.messageHandlers
+        ? "native-webview" // best-effort: a WKWebView with a native bridge (e.g. the bb iOS app)
+        : displayMode === "standalone"
+          ? "pwa"
+          : "browser";
+
+  const label = [platform || "?", browser].filter(Boolean).join(" · ") + (mobile ? " (mobile)" : "");
+
+  return { platform, mobile, browser, displayMode, runtime, label, ua };
+}
+
+/** Computed once at module load; stable for this realm. */
+export const clientDescriptor: ClientDescriptor = describeClient();
