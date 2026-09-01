@@ -194,77 +194,220 @@ function CallConsole({ onViewTranscript }: { onViewTranscript: (sessionId: strin
   );
 }
 
-function EventLine({ event }: { event: EventRow }) {
-  const payload = parsePayload(event.payload);
-  const time = <span className="shrink-0 tabular-nums text-xs text-muted-foreground">{fmtTime(event.ts)}</span>;
-  switch (event.kind) {
-    case "user":
-      return (
-        <div className="flex gap-3 py-1.5">
-          {time}
-          <div className="text-sm">
-            <span className="font-medium text-foreground">You</span>{" "}
-            <span className="text-foreground/90">{String(payload.text ?? "")}</span>
-          </div>
-        </div>
-      );
-    case "assistant":
-      return (
-        <div className="flex gap-3 py-1.5">
-          {time}
-          <div className="text-sm">
-            <span className="font-medium text-primary">Aide</span>{" "}
-            <span className="text-foreground/90">{String(payload.text ?? "")}</span>
-          </div>
-        </div>
-      );
-    case "tool.call":
-      return (
-        <div className="flex gap-3 py-1">
-          {time}
-          <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-            → {String(payload.name ?? "?")}({JSON.stringify(payload.args ?? {})})
-          </code>
-        </div>
-      );
-    case "tool.result": {
-      const output = String(payload.output ?? "");
-      return (
-        <div className="flex gap-3 py-1">
-          {time}
-          <details className="min-w-0 flex-1">
-            <summary className="cursor-pointer truncate font-mono text-xs text-muted-foreground">
-              ← {String(payload.name ?? "?")}: {output.slice(0, 120)}
-            </summary>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs text-foreground/80">
-              {output}
-            </pre>
-          </details>
-        </div>
-      );
-    }
-    case "notice":
-      return (
-        <div className="flex gap-3 py-1.5">
-          {time}
-          <span className="text-sm italic text-muted-foreground">🔔 {String(payload.text ?? "")}</span>
-        </div>
-      );
-    case "error":
-      return (
-        <div className="flex gap-3 py-1.5">
-          {time}
-          <span className="text-sm text-destructive">{String(payload.message ?? "error")}</span>
-        </div>
-      );
-    default:
-      return (
-        <div className="flex gap-3 py-1">
-          {time}
-          <span className="text-xs italic text-muted-foreground">{event.kind.replace("session.", "session ")}</span>
-        </div>
-      );
+// ─── Transcript rendering ────────────────────────────────────────────────────
+// The transcript reads as a narrative, not a raw log: speech is attributed with
+// a speaker gutter + tint, and tool calls become human "action chips" (a paired
+// call+result resolved into one line) with the raw {args, output} always one
+// tap away. The action set is open-ended (built-ins + a dynamic
+// run_plugin_command), so known tools get crafted phrasing and everything else
+// falls through a generic humanizer — nothing is ever dropped or shown as junk.
+
+type ActionFamily = "inspect" | "navigate" | "mutate" | "compose" | "self" | "plugin" | "other";
+
+const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
+  get_context: { family: "inspect", verb: "Read your context" },
+  list_projects: { family: "inspect", verb: "Listed projects" },
+  list_machines: { family: "inspect", verb: "Listed machines" },
+  list_live_threads: { family: "inspect", verb: "Listed live threads" },
+  list_threads: { family: "inspect", verb: "Listed threads" },
+  search_threads: { family: "inspect", verb: "Searched threads" },
+  read_thread: { family: "inspect", verb: "Read a thread" },
+  focus_thread: { family: "navigate", verb: "Focused a thread" },
+  set_pane: { family: "navigate", verb: "Changed the layout" },
+  show_diff: { family: "navigate", verb: "Opened a diff" },
+  send_to_thread: { family: "mutate", verb: "Sent a message" },
+  start_thread: { family: "mutate", verb: "Started a thread" },
+  stop_thread: { family: "mutate", verb: "Stopped a thread" },
+  archive_thread: { family: "mutate", verb: "Archived a thread" },
+  rename_thread: { family: "mutate", verb: "Renamed a thread" },
+  update_instructions: { family: "self", verb: "Updated its instructions" },
+  set_composer_text: { family: "compose", verb: "Drafted a message" },
+  append_composer_text: { family: "compose", verb: "Appended to the draft" },
+  run_plugin_command: { family: "plugin", verb: "Ran a plugin command" },
+};
+
+function actionMeta(name: string): { family: ActionFamily; verb: string } {
+  return ACTIONS[name] ?? { family: "other", verb: name.replace(/[._]/g, " ").replace(/^\w/, (c) => c.toUpperCase()) };
+}
+
+/** The most salient argument to show inline next to the verb, if any. */
+function actionObject(name: string, args: Record<string, unknown>): string {
+  const str = (value: unknown): string => (typeof value === "string" ? value : "");
+  const clip = (text: string, max = 64): string => (text.length > max ? `${text.slice(0, max)}…` : text);
+  if (name === "run_plugin_command") {
+    const argv = Array.isArray(args.argv) ? (args.argv as unknown[]).map(String).join(" ") : "";
+    return clip([str(args.plugin_id), argv].filter(Boolean).join(" "));
   }
+  return clip(str(args.query) || str(args.title) || str(args.message) || str(args.text) || str(args.prompt) || str(args.action));
+}
+
+function ActionGlyph({ family }: { family: ActionFamily }) {
+  const cls = "size-3";
+  switch (family) {
+    case "inspect":
+      return <svg viewBox="0 0 16 16" className={cls} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden><circle cx="7" cy="7" r="4" /><path d="M13 13l-3-3" /></svg>;
+    case "navigate":
+      return <svg viewBox="0 0 16 16" className={cls} fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden><circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="1.4" fill="currentColor" stroke="none" /></svg>;
+    case "mutate":
+      return <svg viewBox="0 0 16 16" className={cls} fill="currentColor" aria-hidden><path d="M8.7 1L3 9h4l-1.3 6L13 6.5H8.6z" /></svg>;
+    case "compose":
+      return <svg viewBox="0 0 16 16" className={cls} fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M11 2.4l2.6 2.6L6 12.6l-3.2.6.6-3.2z" /></svg>;
+    case "self":
+      return <svg viewBox="0 0 16 16" className={cls} fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden><circle cx="8" cy="8" r="2.1" /><circle cx="8" cy="8" r="5.5" /></svg>;
+    case "plugin":
+      return <svg viewBox="0 0 16 16" className={cls} fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" aria-hidden><path d="M6.2 2.5h3.6v1.6a1.4 1.4 0 002.8 0V4h1.4v3.4h-1.6a1.4 1.4 0 000 2.8h1.6V13H2.4V9.9H4a1.4 1.4 0 000-2.8H2.4V2.5z" /></svg>;
+    default:
+      return <svg viewBox="0 0 16 16" className={cls} fill="currentColor" aria-hidden><circle cx="8" cy="8" r="2.4" /></svg>;
+  }
+}
+
+function Chevron() {
+  return (
+    <svg viewBox="0 0 16 16" className="ml-auto size-3 shrink-0 text-muted-foreground/40 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M6 4l4 4-4 4" />
+    </svg>
+  );
+}
+
+type Row =
+  | { kind: "speech"; id: number; ts: number; who: "you" | "aide"; text: string }
+  | { kind: "action"; id: number; ts: number; name: string; args: Record<string, unknown>; output: string | null }
+  | { kind: "notice"; id: number; ts: number; text: string }
+  | { kind: "error"; id: number; ts: number; message: string }
+  | { kind: "system"; id: number; ts: number; label: string };
+
+/** Fold the raw event log into display rows, pairing each tool.call with its result. */
+function buildRows(events: EventRow[]): Row[] {
+  const rows: Row[] = [];
+  const consumed = new Set<number>();
+  events.forEach((event, index) => {
+    const payload = parsePayload(event.payload);
+    switch (event.kind) {
+      case "user":
+      case "assistant":
+        rows.push({ kind: "speech", id: event.id, ts: event.ts, who: event.kind === "user" ? "you" : "aide", text: String(payload.text ?? "") });
+        break;
+      case "tool.call": {
+        const name = String(payload.name ?? "?");
+        let output: string | null = null;
+        for (let j = index + 1; j < events.length; j++) {
+          const later = events[j];
+          if (later.kind !== "tool.result" || consumed.has(later.id)) continue;
+          const lp = parsePayload(later.payload);
+          if (String(lp.name ?? "?") === name) {
+            output = String(lp.output ?? "");
+            consumed.add(later.id);
+            break;
+          }
+        }
+        rows.push({ kind: "action", id: event.id, ts: event.ts, name, args: (payload.args as Record<string, unknown>) ?? {}, output });
+        break;
+      }
+      case "tool.result":
+        if (consumed.has(event.id)) break; // already merged into its call
+        rows.push({ kind: "action", id: event.id, ts: event.ts, name: String(payload.name ?? "?"), args: {}, output: String(payload.output ?? "") });
+        break;
+      case "notice":
+        rows.push({ kind: "notice", id: event.id, ts: event.ts, text: String(payload.text ?? "") });
+        break;
+      case "error":
+        rows.push({ kind: "error", id: event.id, ts: event.ts, message: String(payload.message ?? "error") });
+        break;
+      default:
+        rows.push({ kind: "system", id: event.id, ts: event.ts, label: event.kind.replace("session.", "session ") });
+    }
+  });
+  return rows;
+}
+
+function SpeechRow({ row }: { row: Extract<Row, { kind: "speech" }> }) {
+  const you = row.who === "you";
+  return (
+    <div className={cn("flex gap-2.5 rounded-md border-l-2 py-1.5 pl-2.5 pr-2", you ? "border-l-border bg-muted/40" : "border-l-primary/50 bg-primary/[0.06]")}>
+      <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full", you ? "bg-muted text-muted-foreground" : "bg-primary/15 text-primary")}>
+        <span className="scale-75">{you ? <MicIcon slashed={false} /> : <WaveformIcon live={false} />}</span>
+      </span>
+      <div className="min-w-0 flex-1">
+        <span className="flex items-baseline gap-2">
+          <span className={cn("text-xs font-semibold", you ? "text-foreground" : "text-primary")}>{you ? "You" : "Aide"}</span>
+          <span className="text-[10px] tabular-nums text-muted-foreground/50">{fmtTime(row.ts)}</span>
+        </span>
+        <p className="whitespace-pre-wrap text-sm text-foreground/90">{row.text}</p>
+      </div>
+    </div>
+  );
+}
+
+function ActionRow({ row }: { row: Extract<Row, { kind: "action" }> }) {
+  const meta = actionMeta(row.name);
+  const object = actionObject(row.name, row.args);
+  const pending = row.output === null;
+  const isError = !pending && /^tool error/i.test(row.output ?? "");
+  const hasArgs = Object.keys(row.args).length > 0;
+  return (
+    <details className="group pl-2.5">
+      <summary className="flex cursor-pointer list-none items-center gap-2 py-1 text-xs">
+        <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-md", isError ? "bg-destructive/15 text-destructive" : "bg-muted text-muted-foreground")}>
+          <ActionGlyph family={meta.family} />
+        </span>
+        <span className={cn("shrink-0 font-medium", isError ? "text-destructive" : "text-foreground/80")}>{meta.verb}</span>
+        {object ? <span className="truncate text-muted-foreground">· {object}</span> : null}
+        {pending ? <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" /> : null}
+        <Chevron />
+      </summary>
+      <div className="mb-1 mt-1 space-y-1 pl-7">
+        {hasArgs ? (
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px] text-muted-foreground">{JSON.stringify(row.args, null, 2)}</pre>
+        ) : null}
+        {row.output ? (
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px] text-foreground/80">{row.output}</pre>
+        ) : (
+          <p className="text-[11px] italic text-muted-foreground">Waiting for result…</p>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function NoticeRow({ row }: { row: Extract<Row, { kind: "notice" }> }) {
+  return (
+    <p className="px-2 py-1 text-center text-xs italic text-muted-foreground/80">🔔 {row.text}</p>
+  );
+}
+
+function ErrorRow({ row }: { row: Extract<Row, { kind: "error" }> }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5">
+      <span className="mt-px text-xs text-destructive">⚠</span>
+      <span className="text-sm text-destructive">{row.message}</span>
+    </div>
+  );
+}
+
+function SystemRow({ row }: { row: Extract<Row, { kind: "system" }> }) {
+  return <p className="px-2 py-0.5 text-center text-[11px] italic text-muted-foreground/50">{row.label}</p>;
+}
+
+function TranscriptBody({ events }: { events: EventRow[] }) {
+  const rows = buildRows(events);
+  return (
+    <div className="space-y-1 py-1.5">
+      {rows.map((row) => {
+        switch (row.kind) {
+          case "speech":
+            return <SpeechRow key={row.id} row={row} />;
+          case "action":
+            return <ActionRow key={row.id} row={row} />;
+          case "notice":
+            return <NoticeRow key={row.id} row={row} />;
+          case "error":
+            return <ErrorRow key={row.id} row={row} />;
+          default:
+            return <SystemRow key={row.id} row={row} />;
+        }
+      })}
+    </div>
+  );
 }
 
 /**
@@ -440,11 +583,11 @@ export function SessionsPanel() {
                 </span>
               ) : null}
             </div>
-            <div className="divide-y divide-border/50 rounded-lg border border-border bg-card px-3 py-1">
+            <div className="rounded-lg border border-border bg-card px-2 py-1">
               {events.length === 0 ? (
-                <p className="py-3 text-sm text-muted-foreground">No events.</p>
+                <p className="py-3 text-center text-sm text-muted-foreground">No events yet.</p>
               ) : (
-                events.map((event) => <EventLine key={event.id} event={event} />)
+                <TranscriptBody events={events} />
               )}
             </div>
           </>
