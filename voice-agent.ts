@@ -49,6 +49,14 @@ interface RemotePresence {
  */
 const MOBILE_NAV_TOOLS = new Set(["focus_thread"]);
 
+/**
+ * Tools that do real work AND navigate (spawn/diff, then `bb.sdk.threads.open`).
+ * Unlike a pure-navigation tool we don't refuse these — we run them with
+ * `focus:false` on a live mobile call so the work happens without backgrounding
+ * the call. The server honors the flag by skipping its `threads.open`.
+ */
+const FOCUS_SUPPRESSIBLE_TOOLS = new Set(["start_thread", "show_diff"]);
+
 /** A mirror is stale (owner realm likely gone) after two missed heartbeats. */
 const PRESENCE_STALE_MS = 25_000;
 /** How often the owning realm re-announces a live call, for the mirror above. */
@@ -388,7 +396,10 @@ export class VoiceAgent {
       | { nonce?: unknown; phase?: unknown; startedAt?: unknown; client?: unknown; realm?: unknown }
       | null;
     const nonce = typeof p?.nonce === "string" ? p.nonce : null;
-    if (!nonce || nonce === this.nonce || this.hasLocalCall()) return;
+    // Never mirror our own broadcast. Match on realm too, not just nonce: after
+    // stop() nulls the nonce, a reordered trailing "live" frame from this realm
+    // would otherwise slip past the nonce check and ghost as a remote call.
+    if (!nonce || nonce === this.nonce || p?.realm === realmId || this.hasLocalCall()) return;
     const phase = p?.phase;
     if (phase === "idle") {
       // Only the call we're actually mirroring can clear it — a late idle for an
@@ -756,7 +767,15 @@ export class VoiceAgent {
       if (!newTrack) throw new Error("no audio track");
       newTrack.enabled = this.state !== "muted"; // preserve the user's mute
       await sender.replaceTrack(newTrack);
-      session.micTrack?.stop();
+      // Detach the old track's lifecycle handlers before stopping it — otherwise
+      // its onended fires (session still current) and re-enters suspend/recover,
+      // flashing a false "mic paused".
+      if (session.micTrack) {
+        session.micTrack.onmute = null;
+        session.micTrack.onunmute = null;
+        session.micTrack.onended = null;
+        session.micTrack.stop();
+      }
       session.micTrack = newTrack;
       this.attachMicLifecycle(session, newTrack);
       this.setMicSuspended(false);
@@ -947,11 +966,11 @@ export class VoiceAgent {
       output =
         "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. Instead, tell the user in one short sentence exactly what to tap to get there themselves.";
     } else {
-      // start_thread navigates (spawn → threads.open) which backgrounds a live
-      // mobile call — tell the server not to focus so the thread still starts but
+      // These tools navigate (…→ threads.open) which would background a live
+      // mobile call — tell the server not to focus so the work still happens but
       // nothing navigates. (The promptless start_thread is handled above.)
       const suppressFocus =
-        name === "start_thread" &&
+        FOCUS_SUPPRESSIBLE_TOOLS.has(name) &&
         clientDescriptor.mobile &&
         (this.state === "live" || this.state === "muted");
       if (suppressFocus) this.logDiag("nav.suppressedFocus", { name });
@@ -1156,7 +1175,10 @@ export class VoiceAgent {
           }
           const response = event.response as Record<string, unknown> | undefined;
           const usage = response?.usage;
-          if (usage && typeof usage === "object") {
+          // A response.done can land after stop() cleared the nonce; without one
+          // the cost can't be attributed to a session, so drop it rather than
+          // writing an orphan usage row.
+          if (usage && typeof usage === "object" && this.nonce) {
             void this.bindings?.rpc
               .call("recordUsage", {
                 model: typeof response?.model === "string" ? response.model : null,

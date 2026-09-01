@@ -979,7 +979,13 @@ export default async function plugin(bb: BbPluginApi) {
             ? { environmentId, target: "all", mergeBaseBranch }
             : { environmentId, target: "uncommitted" },
         );
-        await bb.sdk.threads.open({ threadId, file: null }).catch(() => undefined);
+        // Like start_thread, show_diff both computes something useful AND
+        // navigates (threads.open). Skip the navigation when the client asks
+        // (focus:false) so a live mobile call isn't backgrounded — the diff
+        // summary is still returned either way.
+        if (args.focus !== false) {
+          await bb.sdk.threads.open({ threadId, file: null }).catch(() => undefined);
+        }
         if (diff.outcome !== "available") return `Diff not available (${diff.outcome}).`;
         const files = diff.files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions }));
         return JSON.stringify({ shortstat: diff.shortstat, files: files.slice(0, 50) });
