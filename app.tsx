@@ -18,7 +18,8 @@ import {
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
-import { AudioDeviceSettings, SessionsPanel } from "./sessions-panel";
+import { SessionsPanel } from "./sessions-panel";
+import { AudioSettings, BehaviorSettings, ModelsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import "./app.css";
@@ -344,10 +345,19 @@ function SidebarLiveIndicator() {
 
 export default definePluginApp((app) => {
   app.slots.settingsSection({
-    id: "audio-devices",
-    title: "Audio devices",
-    description: "Choose the microphone and speaker used by new Handsfree voice sessions.",
-    component: AudioDeviceSettings,
+    id: "models",
+    title: "Model & voice",
+    component: ModelsSettings,
+  });
+  app.slots.settingsSection({
+    id: "behavior",
+    title: "Behavior",
+    component: BehaviorSettings,
+  });
+  app.slots.settingsSection({
+    id: "audio",
+    title: "Audio",
+    component: AudioSettings,
   });
   app.composer.customize({
     id: "aide-voice",

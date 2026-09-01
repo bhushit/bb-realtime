@@ -9,7 +9,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { DEFAULT_MODEL, MODEL_OPTIONS } from "./models";
+import {
+  DEFAULT_MODEL,
+  DEFAULT_VOICE,
+  MODEL_OPTIONS,
+  VOICE_OPTIONS,
+  isModel,
+  isVoice,
+  type RealtimeModel,
+  type Voice,
+} from "./models";
 
 export const rpcContract = defineRpcContract({
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
@@ -90,10 +99,70 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
-  /** Switch the realtime model used by new voice sessions. */
-  setModel: {
-    input: z.object({ model: z.enum(MODEL_OPTIONS) }).strict(),
+  /** Effective non-secret config for new voice sessions (kv-backed). */
+  getConfig: {
+    input: z.null(),
+    output: z
+      .object({
+        model: z.enum(MODEL_OPTIONS),
+        voice: z.enum(VOICE_OPTIONS),
+        notifications: z.boolean(),
+        pluginCommands: z.string(),
+        credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
+      })
+      .strict(),
+  },
+  /** Update one or more config fields for new voice sessions. */
+  setConfig: {
+    input: z
+      .object({
+        model: z.enum(MODEL_OPTIONS).optional(),
+        voice: z.enum(VOICE_OPTIONS).optional(),
+        notifications: z.boolean().optional(),
+        pluginCommands: z.string().max(2000).optional(),
+        credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
+      })
+      .strict(),
+    output: z
+      .object({
+        model: z.enum(MODEL_OPTIONS),
+        voice: z.enum(VOICE_OPTIONS),
+        notifications: z.boolean(),
+        pluginCommands: z.string(),
+        credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
+      })
+      .strict(),
+  },
+  /** Clear the stored OpenAI API key (falls back to env / subscription). */
+  clearApiKey: {
+    input: z.null(),
     output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** Installed plugins that expose a bb command the voice agent could run. */
+  listPlugins: {
+    input: z.null(),
+    output: z
+      .object({
+        plugins: z.array(
+          z.object({ id: z.string(), name: z.string(), summary: z.string() }).strict(),
+        ),
+      })
+      .strict(),
+  },
+  /** Which credential the backend will use for new voice sessions. */
+  getCredentialStatus: {
+    input: z.null(),
+    output: z
+      .object({
+        /** The credential apiKey() will actually pick right now. */
+        effective: z.enum(["apiKey", "env", "subscription", "none"]),
+        /** The user's stored preference; "auto" follows precedence. */
+        preference: z.enum(["auto", "apiKey", "subscription"]),
+        hasApiKey: z.boolean(),
+        envKeyPresent: z.boolean(),
+        subscriptionAvailable: z.boolean(),
+      })
+      .strict(),
   },
   /** Append one event to a voice session's transcript log. */
   logEvent: {
@@ -290,26 +359,81 @@ export default async function plugin(bb: BbPluginApi) {
     )`,
   ]);
 
+  // The API key is the ONE declarative setting: secrets must live here to get
+  // 0600-file storage that never touches the db or the frontend. Everything
+  // else the user configures — model, voice, behavior — is kv-backed below and
+  // rendered by our own polished settings sections, so the host's auto-form
+  // stays a single clean field instead of a flat dump.
   const settings = bb.settings.define({
-    openaiApiKey: { type: "string", label: "OpenAI API key", secret: true },
-    model: {
-      type: "select",
-      label: "Realtime model",
-      options: [...MODEL_OPTIONS],
-      default: DEFAULT_MODEL,
-    },
-    voice: { type: "string", label: "Voice", default: "marin" },
-    notifications: {
-      type: "boolean",
-      label: "Announce thread events in voice sessions",
-      default: true,
-    },
-    pluginCommands: {
+    openaiApiKey: {
       type: "string",
-      label: 'Plugin commands exposed to the voice agent: "all", "none", or comma-separated plugin ids',
-      default: "all",
+      label: "OpenAI API key (optional)",
+      secret: true,
+      description: "Leave blank to use your ChatGPT subscription instead (run `codex login`).",
     },
   });
+
+  // ---- kv-backed voice-session config (model / voice / behavior) ----
+  // "auto" keeps the historical precedence (key → env → subscription); the
+  // user can pin it to one credential when more than one is available.
+  type CredentialPreference = "auto" | "apiKey" | "subscription";
+  const CREDENTIAL_PREFERENCES: readonly CredentialPreference[] = ["auto", "apiKey", "subscription"];
+  const isCredentialPreference = (value: unknown): value is CredentialPreference =>
+    typeof value === "string" && (CREDENTIAL_PREFERENCES as readonly string[]).includes(value);
+
+  interface VoiceConfig {
+    model: RealtimeModel;
+    voice: Voice;
+    notifications: boolean;
+    pluginCommands: string;
+    credentialPreference: CredentialPreference;
+  }
+  const CONFIG_KEY = "config";
+  const CONFIG_DEFAULTS: VoiceConfig = {
+    model: DEFAULT_MODEL,
+    voice: DEFAULT_VOICE,
+    notifications: true,
+    pluginCommands: "all",
+    credentialPreference: "auto",
+  };
+  async function readConfig(): Promise<VoiceConfig> {
+    const stored = (await bb.storage.kv.get<Partial<VoiceConfig>>(CONFIG_KEY)) ?? {};
+    return {
+      model: isModel(stored.model) ? stored.model : CONFIG_DEFAULTS.model,
+      voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
+      notifications:
+        typeof stored.notifications === "boolean" ? stored.notifications : CONFIG_DEFAULTS.notifications,
+      pluginCommands:
+        typeof stored.pluginCommands === "string" ? stored.pluginCommands : CONFIG_DEFAULTS.pluginCommands,
+      credentialPreference: isCredentialPreference(stored.credentialPreference)
+        ? stored.credentialPreference
+        : CONFIG_DEFAULTS.credentialPreference,
+    };
+  }
+  async function writeConfig(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
+    const next = { ...(await readConfig()), ...patch };
+    await bb.storage.kv.set(CONFIG_KEY, next);
+    return next;
+  }
+
+  // One-time migration: earlier versions stored model/voice/notifications/
+  // pluginCommands as declarative settings. Carry any customized values into
+  // kv so removing those descriptors doesn't silently reset them.
+  if (!(await bb.storage.kv.get<boolean>("config.migrated"))) {
+    try {
+      const legacy = await bb.sdk.plugins.getSettings({ pluginId: bb.pluginId });
+      const v = (legacy?.values ?? {}) as Record<string, unknown>;
+      const patch: Partial<VoiceConfig> = {};
+      if (isModel(v.model)) patch.model = v.model;
+      if (isVoice(v.voice)) patch.voice = v.voice;
+      if (typeof v.notifications === "boolean") patch.notifications = v.notifications;
+      if (typeof v.pluginCommands === "string") patch.pluginCommands = v.pluginCommands;
+      if (Object.keys(patch).length > 0) await writeConfig(patch);
+    } catch (error) {
+      bb.log.warn(`config migration skipped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await bb.storage.kv.set("config.migrated", true);
+  }
 
   // ---- plugin-command exposure ----
   // Other installed plugins contribute `bb` CLI commands. The voice agent
@@ -317,7 +441,7 @@ export default async function plugin(bb: BbPluginApi) {
   // run_plugin_command tool; the pluginCommands setting curates which
   // plugins are exposed (all / none / allowlist of plugin ids).
   async function exposedPluginCommands(): Promise<PluginCommandInfo[]> {
-    const { pluginCommands } = await settings.get();
+    const { pluginCommands } = await readConfig();
     const filter = (pluginCommands ?? "all").trim().toLowerCase();
     if (filter === "none") return [];
     const allow =
@@ -352,7 +476,7 @@ export default async function plugin(bb: BbPluginApi) {
   // queues and digests these (never interrupting speech or an active
   // response); this side only decides WHETHER to publish.
   async function publishThreadEvent(kind: "idle" | "failed", thread: { id: string; title: string | null; visibility: string }, detail: string | null) {
-    const { notifications } = await settings.get();
+    const { notifications } = await readConfig();
     if (!notifications || thread.visibility === "hidden") return;
     bb.realtime.publish("aide-thread-event", {
       kind,
@@ -440,12 +564,21 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function apiKey(): Promise<string> {
     const { openaiApiKey } = await settings.get();
+    const { credentialPreference } = await readConfig();
     const key = openaiApiKey || process.env.OPENAI_API_KEY;
-    if (key) return key;
-    const codex = await codexToken();
-    if (codex) return codex;
+    // When the user pinned the subscription, try it first and only fall back to
+    // a key. Otherwise (auto / apiKey) a key wins, then the subscription.
+    if (credentialPreference === "subscription") {
+      const codex = await codexToken();
+      if (codex) return codex;
+      if (key) return key;
+    } else {
+      if (key) return key;
+      const codex = await codexToken();
+      if (codex) return codex;
+    }
     throw new Error(
-      "No OpenAI credentials. Set an API key with `bb plugin config handsfree set openaiApiKey <key>`, or sign in with `codex login` to use your ChatGPT subscription.",
+      "No OpenAI credentials. Set an API key in the Handsfree settings, or sign in with `codex login` to use your ChatGPT subscription.",
     );
   }
 
@@ -881,7 +1014,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce }) {
       const key = await apiKey();
-      const { model, voice } = await settings.get();
+      const { model, voice } = await readConfig();
       const pluginCommands = await exposedPluginCommands();
       const pluginSection =
         pluginCommands.length === 0
@@ -940,10 +1073,64 @@ export default async function plugin(bb: BbPluginApi) {
       savePromptVersion(content, source, note);
       return { ok: true as const };
     },
-    async setModel({ model }) {
-      await bb.sdk.plugins.updateSettings({ pluginId: bb.pluginId, values: { model } });
-      bb.log.info(`realtime model switched to ${model}`);
+    async getConfig() {
+      return await readConfig();
+    },
+    async setConfig(patch) {
+      const next = await writeConfig(patch);
+      bb.log.info(`voice config updated: ${JSON.stringify(patch)}`);
+      // Every open window refetches, so the settings sections and the nav-panel
+      // quick-switch stay in sync across windows.
+      bb.realtime.publish("config-changed", {});
+      return next;
+    },
+    async clearApiKey() {
+      // null (not "") actually removes the secret, so the settings field shows
+      // "not set" again rather than an empty-but-present value.
+      await bb.sdk.plugins.updateSettings({ pluginId: bb.pluginId, values: { openaiApiKey: null } });
+      bb.log.info("OpenAI API key cleared");
+      bb.realtime.publish("config-changed", {});
       return { ok: true as const };
+    },
+    async listPlugins() {
+      try {
+        const { plugins } = await bb.sdk.plugins.list();
+        return {
+          plugins: plugins
+            .filter(
+              (plugin) =>
+                plugin.enabled &&
+                plugin.status === "running" &&
+                plugin.cliCommand !== null &&
+                plugin.id !== bb.pluginId,
+            )
+            .map((plugin) => ({
+              id: plugin.id,
+              name: plugin.cliCommand?.name ?? plugin.id,
+              summary: plugin.cliCommand?.summary ?? "",
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        };
+      } catch (error) {
+        bb.log.warn(`could not list plugins: ${error instanceof Error ? error.message : String(error)}`);
+        return { plugins: [] };
+      }
+    },
+    async getCredentialStatus() {
+      const { openaiApiKey } = await settings.get();
+      const { credentialPreference: preference } = await readConfig();
+      const hasApiKey = !!openaiApiKey;
+      const envKeyPresent = !!process.env.OPENAI_API_KEY;
+      const subscriptionAvailable = !!(await codexToken());
+      const keySource = hasApiKey ? ("apiKey" as const) : envKeyPresent ? ("env" as const) : null;
+      // Mirror apiKey() so the badge shows what a session will actually use.
+      const effective =
+        preference === "subscription"
+          ? subscriptionAvailable
+            ? ("subscription" as const)
+            : (keySource ?? ("none" as const))
+          : keySource ?? (subscriptionAvailable ? ("subscription" as const) : ("none" as const));
+      return { effective, preference, hasApiKey, envKeyPresent, subscriptionAvailable };
     },
     async logEvent({ sessionId, kind, payload }) {
       db.prepare(
@@ -992,7 +1179,7 @@ export default async function plugin(bb: BbPluginApi) {
       const inDetails = (usage.input_token_details ?? {}) as Record<string, unknown>;
       const outDetails = (usage.output_token_details ?? {}) as Record<string, unknown>;
       const cachedDetails = (inDetails.cached_tokens_details ?? {}) as Record<string, unknown>;
-      const { model: configuredModel } = await settings.get();
+      const { model: configuredModel } = await readConfig();
       db.prepare(
         `INSERT INTO usage_events (ts, model, session_id, input_text, input_audio, cached_text, cached_audio, output_text, output_audio)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
