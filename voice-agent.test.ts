@@ -71,22 +71,23 @@ test("stop/mute from a surface that doesn't own the call is relayed to the owner
 
   // Commands also carry client/realm identity (observability); assert the parts
   // that matter for routing.
-  const lastCommand = () => calls.at(-1)?.args as { nonce: string; action: string };
+  const lastArgs = () => calls.at(-1)?.args as { nonce: string; action?: string };
 
-  agent.stopFromSurface();
+  agent.toggleMuteFromSurface(); // live → mute (relayed to the owner)
   assert.equal(calls.at(-1)?.method, "sendVoiceCommand");
-  assert.equal(lastCommand().nonce, "call-A");
-  assert.equal(lastCommand().action, "stop");
-
-  agent.toggleMuteFromSurface(); // live → mute
-  assert.equal(lastCommand().action, "mute");
+  assert.equal(lastArgs().nonce, "call-A");
+  assert.equal(lastArgs().action, "mute");
 
   agent.ingestPresence({ nonce: "call-A", phase: "muted", startedAt: 1000 });
   agent.toggleMuteFromSurface(); // muted → unmute
-  assert.equal(lastCommand().action, "unmute");
+  assert.equal(lastArgs().action, "unmute");
 
-  agent.toggleFromSurface(); // a mirrored call is stopped, not re-toggled
-  assert.equal(lastCommand().action, "stop");
+  // Stop of a mirrored call is server-authoritative (forceStop) so it works even
+  // against a frozen owner, and clears the mirror immediately.
+  agent.stopFromSurface();
+  assert.equal(calls.at(-1)?.method, "forceStop");
+  assert.equal(lastArgs().nonce, "call-A");
+  assert.equal(agent.getState(), "idle");
 
   agent.ingestPresence({ nonce: "call-A", phase: "idle", startedAt: null });
 });

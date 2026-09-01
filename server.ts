@@ -222,6 +222,17 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  /**
+   * End a call authoritatively, without needing its owner realm to act — the
+   * owner may be a frozen, backgrounded mobile webview that can no longer receive
+   * commands. Marks the session stopped (so the list stops showing it live) and
+   * broadcasts idle + a stop so every surface clears and the owner tears down if
+   * it ever thaws. This is what makes stop reliable against the navigation zombie.
+   */
+  forceStop: {
+    input: z.object({ nonce: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   /** List voice sessions, newest first, with counts and estimated cost. */
   listSessions: {
     input: z.object({ offset: z.number().int().min(0) }).strict().nullable(),
@@ -1213,6 +1224,17 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async sendVoiceCommand({ nonce, action, client, realm }) {
       bb.realtime.publish("voice-command", { nonce, action, client, realm });
+      return { ok: true as const };
+    },
+    async forceStop({ nonce }) {
+      // Durable end-marker so listSessions stops showing it live even if the
+      // owner realm never logs its own session.stopped (count > 0 is enough).
+      db.prepare(
+        "INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)",
+      ).run(nonce, Date.now(), "session.stopped", JSON.stringify({ _forced: true }));
+      bb.realtime.publish("voice-presence", { nonce, phase: "idle", startedAt: null });
+      bb.realtime.publish("voice-command", { nonce, action: "stop" });
+      bb.realtime.publish("aide-log", { sessionId: nonce });
       return { ok: true as const };
     },
     async listSessions(input) {

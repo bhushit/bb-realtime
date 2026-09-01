@@ -426,6 +426,27 @@ export class VoiceAgent {
       .catch(() => undefined);
   }
 
+  /**
+   * End a call server-authoritatively, so it works even when the owner realm is
+   * a frozen/backgrounded mobile webview that can't receive commands — the fix
+   * for the navigation zombie. Fire-and-forget; cosmetic on failure.
+   */
+  private forceStop(nonce: string) {
+    const rpc = this.bindings?.rpc;
+    if (!rpc) return;
+    void rpc.call("forceStop", { nonce }).catch(() => undefined);
+  }
+
+  /** Stop a call we only mirror: force-stop on the server + drop the mirror now. */
+  private stopRemote(nonce: string) {
+    this.forceStop(nonce);
+    if (this.remotePresence?.nonce === nonce) {
+      this.remotePresence = null;
+      this.disarmRemoteExpiry();
+      this.emitChange();
+    }
+  }
+
   /** Apply a relayed command — but only if THIS realm owns that call. */
   applyVoiceCommand(payload: unknown) {
     const p = payload as { nonce?: unknown; action?: unknown } | null;
@@ -443,7 +464,7 @@ export class VoiceAgent {
   toggleFromSurface() {
     if (this.hasLocalCall()) return this.toggle();
     const remote = this.remotePresenceLive();
-    if (remote) return this.sendCommand(remote.nonce, "stop");
+    if (remote) return this.stopRemote(remote.nonce);
     void this.start();
   }
 
@@ -454,11 +475,11 @@ export class VoiceAgent {
     if (remote) this.sendCommand(remote.nonce, remote.phase === "muted" ? "unmute" : "mute");
   }
 
-  /** Stop from any surface. */
+  /** Stop from any surface — server-authoritative for a call we only mirror. */
   stopFromSurface() {
     if (this.hasLocalCall()) return this.stop();
     const remote = this.remotePresenceLive();
-    if (remote) this.sendCommand(remote.nonce, "stop");
+    if (remote) this.stopRemote(remote.nonce);
   }
 
   setAudioPreferences(next: AudioDevicePreferences) {
@@ -639,8 +660,19 @@ export class VoiceAgent {
   private attachMicLifecycle(session: SessionHandle, track: MediaStreamTrack) {
     track.onmute = () => {
       if (this.session !== session) return;
-      this.logDiag("mic.track.muted", {});
-      this.setMicSuspended(true);
+      const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+      this.logDiag("mic.track.muted", { hidden });
+      if (hidden) {
+        // Backgrounded on mobile: the mic is gone and this realm is about to
+        // freeze. End cleanly NOW (while the handler still runs) and enforce it
+        // server-side, so it never becomes an unstoppable zombie.
+        this.logDiag("mic.suspend.teardown", {});
+        this.endBecauseSuspended();
+      } else {
+        // Mic muted while visible (another app grabbed it, glitch): try to heal.
+        this.setMicSuspended(true);
+        void this.recoverMicIfNeeded(session);
+      }
     };
     track.onunmute = () => {
       if (this.session !== session) return;
@@ -653,6 +685,19 @@ export class VoiceAgent {
       this.setMicSuspended(true);
       void this.recoverMicIfNeeded(session);
     };
+  }
+
+  /**
+   * End a call because the OS suspended its mic while backgrounded (mobile).
+   * Force-stops server-side FIRST (so the end survives even if this realm freezes
+   * a beat later), then tears down locally. This is the honest alternative to a
+   * silent one-way zombie: the call ends and every surface goes idle.
+   */
+  private endBecauseSuspended() {
+    const nonce = this.nonce;
+    toast.info("Aide: call ended — the app moved to the background");
+    if (nonce) this.forceStop(nonce);
+    this.stop();
   }
 
   /** On returning to the foreground, try to revive a suspended mic. */
@@ -872,6 +917,17 @@ export class VoiceAgent {
       bindings.openNewThread(projectId);
       output =
         "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
+    } else if (
+      (name === "focus_thread" || name === "set_pane") &&
+      clientDescriptor.mobile &&
+      (this.state === "live" || this.state === "muted")
+    ) {
+      // On mobile, navigating the app backgrounds the realm that owns this call
+      // and iOS suspends the mic — the call dies. So don't navigate during a live
+      // mobile call; have the model point the user to the tap target instead.
+      this.logDiag("nav.blocked", { name });
+      output =
+        "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. Instead, tell the user in one short sentence exactly what to tap to get there themselves.";
     } else {
       try {
         const result = await bindings.rpc.call("runTool", {
