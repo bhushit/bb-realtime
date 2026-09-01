@@ -1,6 +1,8 @@
-// The app-global voice session singleton. Lives in its own module so both
-// the composer button (app.tsx) and the Handsfree page (sessions-panel.tsx)
-// can control one shared session without a circular import.
+// The voice session singleton for a plugin realm. Lives in its own module so
+// both the composer button (app.tsx) and the Handsfree page (sessions-panel.tsx)
+// can reach it without a circular import. Note: bb renders each surface in a
+// separate realm, so this is one instance PER surface; cross-surface state is
+// shared over realtime presence/command channels (see VoiceAgent below).
 import { toast } from "sonner";
 import type { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
@@ -17,6 +19,25 @@ import {
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 /** Who currently has the floor during a live call, for the "listening" UI. */
 export type VoiceActivity = "you" | "aide" | "idle";
+/** A control intent relayed from a non-owning surface to the owning realm. */
+export type VoiceCommandAction = "stop" | "mute" | "unmute";
+
+/**
+ * A live call owned by another surface's realm, mirrored here from the
+ * `voice-presence` broadcast so this realm's controls reflect it. `receivedAt`
+ * lets us expire a call whose owner realm vanished without a clean stop.
+ */
+interface RemotePresence {
+  nonce: string;
+  phase: Exclude<VoiceState, "idle">;
+  startedAt: number | null;
+  receivedAt: number;
+}
+
+/** A mirror is stale (owner realm likely gone) after two missed heartbeats. */
+const PRESENCE_STALE_MS = 25_000;
+/** How often the owning realm re-announces a live call, for the mirror above. */
+const PRESENCE_HEARTBEAT_MS = 10_000;
 
 interface RpcClient {
   call: ReturnType<typeof useRpc<typeof rpcContract>>["call"];
@@ -51,6 +72,16 @@ interface SessionHandle {
   dc: RTCDataChannel | null;
 }
 
+/**
+ * Detach a timer from the event loop where the runtime supports it (Node's
+ * `unref`). No-op in the browser (timer ids have no `unref`), where it isn't
+ * needed — this just keeps background presence timers from holding a process
+ * (e.g. tests) open.
+ */
+function maybeUnref(timer: ReturnType<typeof setInterval>) {
+  (timer as { unref?: () => void }).unref?.();
+}
+
 function browserStorage(): Storage | null {
   try {
     return typeof window === "undefined" ? null : window.localStorage;
@@ -77,9 +108,15 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 2000): Promise<v
 }
 
 /**
- * App-global voice session. Mounted buttons keep `bindings` fresh (latest
- * composer + route context win), so tool calls always act on what the user
- * is currently looking at, and navigation never interrupts the call.
+ * Voice session for one plugin realm. bb renders each surface (composer,
+ * sidebar, the Handsfree page) in its own JS realm, so this singleton is
+ * per-surface, not truly app-global: the realm that starts a call OWNS the
+ * WebRTC session; the call keeps running there as the user navigates within
+ * that realm. Other realms don't hold the session — they mirror its coarse
+ * state over the `voice-presence` broadcast and relay stop/mute back to the
+ * owner via `voice-command`, so every surface reflects and can control the one
+ * live call. Mounted buttons keep `bindings` fresh (latest composer + route
+ * context win) so tool calls act on what the user is currently looking at.
  */
 export class VoiceAgent {
   private state: VoiceState = "idle";
@@ -116,23 +153,55 @@ export class VoiceAgent {
   private liveStartedAt: number | null = null;
   /** The most recent meaningful event, for the dock's live activity ticker. */
   private lastActivity: { kind: string; name: string; text: string } | null = null;
+  /**
+   * A call owned by another surface's realm, mirrored from `voice-presence`.
+   * Non-null only when THIS realm does not own the call; drives the effective
+   * getters so every surface reflects the one live call. Null when we own it.
+   */
+  private remotePresence: RemotePresence | null = null;
+  /** Re-announces our live call so other realms' mirrors don't go stale. */
+  private presenceTimer: ReturnType<typeof setInterval> | null = null;
+  /** Expires a stale mirror (owner realm gone) so we never show a ghost call. */
+  private remoteExpiryTimer: ReturnType<typeof setInterval> | null = null;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
 
-  readonly getState = (): VoiceState => this.state;
+  /**
+   * The effective call state for the UI: our own if we own a call, otherwise a
+   * call mirrored from another surface's realm (`voice-presence`). This is what
+   * makes every surface reflect the single live call, not just the one that
+   * started it.
+   */
+  readonly getState = (): VoiceState =>
+    this.state !== "idle" ? this.state : this.remotePresenceLive()?.phase ?? "idle";
 
   /** Epoch ms when the call went live, or null when not in a live/muted call. */
-  readonly getLiveStartedAt = (): number | null => this.liveStartedAt;
+  readonly getLiveStartedAt = (): number | null =>
+    this.state !== "idle" ? this.liveStartedAt : this.remotePresenceLive()?.startedAt ?? null;
 
   /**
    * The active session id (the call nonce, which doubles as the session id used
    * when logging events), or null when idle. Lets the page jump straight to the
-   * live session's transcript.
+   * live session's transcript — including a call owned by another surface.
    */
-  readonly getSessionId = (): string | null => this.nonce;
+  readonly getSessionId = (): string | null =>
+    this.state !== "idle" ? this.nonce : this.remotePresenceLive()?.nonce ?? null;
+
+  /** True while THIS realm owns (or is opening) the call. */
+  private hasLocalCall(): boolean {
+    return this.state !== "idle";
+  }
+
+  /** The mirrored remote call if still fresh; null once its heartbeats lapse. */
+  private remotePresenceLive(): RemotePresence | null {
+    const remote = this.remotePresence;
+    if (!remote) return null;
+    if (Date.now() - remote.receivedAt > PRESENCE_STALE_MS) return null;
+    return remote;
+  }
 
   /**
    * The latest meaningful event (speech / tool call / notice), for the dock's
@@ -191,10 +260,133 @@ export class VoiceAgent {
   private setState(next: VoiceState) {
     this.state = next;
     this.emitChange();
+    // Announce our own transitions so other realms mirror this call. Idle is
+    // announced explicitly by stop() (which clears the nonce first), so skip it
+    // here — a null nonce has nothing to identify.
+    if (next !== "idle" && this.nonce) this.broadcastPresence(next, this.nonce);
   }
 
   private emitChange() {
     for (const listener of this.listeners) listener();
+  }
+
+  // ---- cross-surface presence (see server: voice-presence / voice-command) ----
+
+  /**
+   * Announce our own call so other realms mirror it. Fire-and-forget; presence
+   * is cosmetic, so a failed publish must never touch the call. Only our own
+   * transitions reach here (setState / stop), so `nonce` always identifies us.
+   */
+  private broadcastPresence(phase: VoiceState, nonce: string) {
+    const rpc = this.bindings?.rpc;
+    if (!rpc) return;
+    void rpc
+      .call("publishPresence", { nonce, phase, startedAt: this.liveStartedAt })
+      .catch(() => undefined);
+  }
+
+  /** Keep remote mirrors fresh while we own a live call (see PRESENCE_STALE_MS). */
+  private startPresenceHeartbeat() {
+    this.stopPresenceHeartbeat();
+    this.presenceTimer = setInterval(() => {
+      if (this.nonce && this.hasLocalCall()) this.broadcastPresence(this.state, this.nonce);
+    }, PRESENCE_HEARTBEAT_MS);
+    maybeUnref(this.presenceTimer);
+  }
+
+  private stopPresenceHeartbeat() {
+    if (this.presenceTimer) clearInterval(this.presenceTimer);
+    this.presenceTimer = null;
+  }
+
+  /**
+   * Ingest a `voice-presence` broadcast. Ignores our own echo and anything while
+   * we own a call (our local state already drives the UI); otherwise mirrors the
+   * remote call so this realm's controls reflect it.
+   */
+  ingestPresence(payload: unknown) {
+    const p = payload as { nonce?: unknown; phase?: unknown; startedAt?: unknown } | null;
+    const nonce = typeof p?.nonce === "string" ? p.nonce : null;
+    if (!nonce || nonce === this.nonce || this.hasLocalCall()) return;
+    const phase = p?.phase;
+    if (phase === "idle") {
+      // Only the call we're actually mirroring can clear it — a late idle for an
+      // older, already-superseded call must not wipe a newer live mirror.
+      if (this.remotePresence?.nonce === nonce) {
+        this.remotePresence = null;
+        this.disarmRemoteExpiry();
+        this.emitChange();
+      }
+      return;
+    }
+    if (phase !== "connecting" && phase !== "live" && phase !== "muted") return;
+    const startedAt = typeof p?.startedAt === "number" ? p.startedAt : null;
+    this.remotePresence = { nonce, phase, startedAt, receivedAt: Date.now() };
+    this.armRemoteExpiry();
+    this.emitChange();
+  }
+
+  /** Poll a mirror to expiry so a vanished owner doesn't leave a ghost "live". */
+  private armRemoteExpiry() {
+    if (this.remoteExpiryTimer) return;
+    this.remoteExpiryTimer = setInterval(() => {
+      if (!this.remotePresence) {
+        this.disarmRemoteExpiry();
+        return;
+      }
+      if (this.remotePresenceLive()) return; // still fresh
+      this.remotePresence = null;
+      this.disarmRemoteExpiry();
+      this.emitChange();
+    }, 5000);
+    maybeUnref(this.remoteExpiryTimer);
+  }
+
+  private disarmRemoteExpiry() {
+    if (this.remoteExpiryTimer) clearInterval(this.remoteExpiryTimer);
+    this.remoteExpiryTimer = null;
+  }
+
+  /** Relay a control intent to whichever realm owns the call. */
+  private sendCommand(nonce: string, action: VoiceCommandAction) {
+    const rpc = this.bindings?.rpc;
+    if (!rpc) return;
+    void rpc.call("sendVoiceCommand", { nonce, action }).catch(() => undefined);
+  }
+
+  /** Apply a relayed command — but only if THIS realm owns that call. */
+  applyVoiceCommand(payload: unknown) {
+    const p = payload as { nonce?: unknown; action?: unknown } | null;
+    const nonce = typeof p?.nonce === "string" ? p.nonce : null;
+    if (!nonce || nonce !== this.nonce || !this.hasLocalCall()) return;
+    const action = p?.action;
+    if (action === "stop") this.stop();
+    else if (action === "mute") this.setMuted(true);
+    else if (action === "unmute") this.setMuted(false);
+  }
+
+  // ---- surface controls: act on the local call, or relay to the owner ----
+
+  /** Start/stop from any surface. A mirrored remote call is stopped, not toggled. */
+  toggleFromSurface() {
+    if (this.hasLocalCall()) return this.toggle();
+    const remote = this.remotePresenceLive();
+    if (remote) return this.sendCommand(remote.nonce, "stop");
+    void this.start();
+  }
+
+  /** Mute/unmute from any surface. */
+  toggleMuteFromSurface() {
+    if (this.hasLocalCall()) return this.toggleMute();
+    const remote = this.remotePresenceLive();
+    if (remote) this.sendCommand(remote.nonce, remote.phase === "muted" ? "unmute" : "mute");
+  }
+
+  /** Stop from any surface. */
+  stopFromSurface() {
+    if (this.hasLocalCall()) return this.stop();
+    const remote = this.remotePresenceLive();
+    if (remote) this.sendCommand(remote.nonce, "stop");
   }
 
   setAudioPreferences(next: AudioDevicePreferences) {
@@ -433,8 +625,10 @@ export class VoiceAgent {
   }
 
   stop() {
+    const endedNonce = this.nonce;
     if (this.session) this.log("session.stopped");
     this.clearConnectWatchdog();
+    this.stopPresenceHeartbeat();
     this.liveStartedAt = null;
     const session = this.session;
     this.session = null;
@@ -455,6 +649,9 @@ export class VoiceAgent {
       session.audio.remove();
     }
     this.setState("idle");
+    // Clear every mirror now that the call is over. Done after nulling nonce so
+    // setState's own broadcast is skipped and this is the single idle announce.
+    if (endedNonce) this.broadcastPresence("idle", endedNonce);
   }
 
   private async handleToolCall(dc: RTCDataChannel, event: Record<string, unknown>) {
@@ -526,9 +723,11 @@ export class VoiceAgent {
   private async start() {
     const bindings = this.bindings;
     if (!bindings) return;
-    this.setState("connecting");
+    // Assign the nonce before entering "connecting" so that state's presence
+    // broadcast already carries our identity.
     const nonce = crypto.randomUUID();
     this.nonce = nonce;
+    this.setState("connecting");
     this.log("session.started", { ...bindings.context });
     try {
       // Deterministic acquisition: enumerate what is actually present, resolve
@@ -634,6 +833,7 @@ export class VoiceAgent {
           this.clearConnectWatchdog();
           this.liveStartedAt = Date.now();
           this.setState("live");
+          this.startPresenceHeartbeat();
           this.log("session.live");
           this.logDiag("conn.dc.open");
         }

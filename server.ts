@@ -177,6 +177,35 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  /**
+   * Broadcast a live call's coarse presence to every surface/realm. The owning
+   * realm (the one holding the WebRTC session) publishes on each state change
+   * and on a heartbeat; other realms mirror it so their composer pill / sidebar
+   * bar reflect the call they don't own. Pure pass-through to realtime.
+   */
+  publishPresence: {
+    input: z
+      .object({
+        nonce: z.string().min(1),
+        phase: z.enum(["connecting", "live", "muted", "idle"]),
+        startedAt: z.number().nullable(),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /**
+   * Relay a control intent (stop/mute/unmute) from a surface that does NOT own
+   * the call to the realm that does. Only the owner (matching nonce) acts on it.
+   */
+  sendVoiceCommand: {
+    input: z
+      .object({
+        nonce: z.string().min(1),
+        action: z.enum(["stop", "mute", "unmute"]),
+      })
+      .strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   /** List voice sessions, newest first, with counts and estimated cost. */
   listSessions: {
     input: z.object({ offset: z.number().int().min(0) }).strict().nullable(),
@@ -1150,6 +1179,14 @@ export default async function plugin(bb: BbPluginApi) {
         else bb.log.info(`${kind} ${detail}`);
       }
       bb.realtime.publish("aide-log", { sessionId });
+      return { ok: true as const };
+    },
+    async publishPresence({ nonce, phase, startedAt }) {
+      bb.realtime.publish("voice-presence", { nonce, phase, startedAt });
+      return { ok: true as const };
+    },
+    async sendVoiceCommand({ nonce, action }) {
+      bb.realtime.publish("voice-command", { nonce, action });
       return { ok: true as const };
     },
     async listSessions(input) {

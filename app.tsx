@@ -53,6 +53,11 @@ function AideVoiceButton() {
     if (typeof muted === "boolean") voiceAgent.setMuted(muted);
   });
 
+  // Cross-surface presence: mirror a call owned by another realm so this pill
+  // reflects it, and relay stop/mute back to whichever realm owns the call.
+  useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
+  useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
+
   // Thread-event notifications (digested; disabled via `notifications` setting).
   useRealtime("aide-thread-event", (payload) => {
     const event = payload as { kind?: unknown; threadId?: unknown; title?: unknown } | null;
@@ -107,7 +112,7 @@ function AideVoiceButton() {
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
           title={muted ? "Unmute" : "Mute"}
-          onClick={() => voiceAgent.toggleMute()}
+          onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
             "flex size-7 items-center justify-center transition-colors",
             muted
@@ -139,7 +144,7 @@ function AideVoiceButton() {
           type="button"
           aria-label="Stop Aide voice session"
           title="Stop"
-          onClick={() => voiceAgent.stop()}
+          onClick={() => voiceAgent.stopFromSurface()}
           className="flex size-7 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
         >
           <StopIcon />
@@ -153,7 +158,7 @@ function AideVoiceButton() {
       type="button"
       aria-label="Start Aide voice agent"
       title="Talk to Aide"
-      onClick={() => voiceAgent.toggle()}
+      onClick={() => voiceAgent.toggleFromSurface()}
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
         state === "connecting"
@@ -205,7 +210,7 @@ function SidebarVoiceBar() {
         type="button"
         aria-label={active ? "Stop Aide voice agent" : "Start Aide voice agent"}
         title={active ? "Stop Aide" : "Talk to Aide"}
-        onClick={() => voiceAgent.toggle()}
+        onClick={() => voiceAgent.toggleFromSurface()}
         className={cn(
           "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium transition-colors",
           active
@@ -224,7 +229,7 @@ function SidebarVoiceBar() {
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
           title={muted ? "Unmute" : "Mute"}
-          onClick={() => voiceAgent.toggleMute()}
+          onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md border border-border transition-colors",
             muted

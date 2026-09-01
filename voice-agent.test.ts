@@ -1,7 +1,98 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { VoiceAgent } from "./voice-agent.ts";
 import { writeAudioDevicePreferences } from "./audio-devices.ts";
+
+/** A VoiceAgent bound to a spy rpc that records every relayed call. */
+function agentWithRpcSpy() {
+  const calls: { method: string; args: unknown }[] = [];
+  const agent = new VoiceAgent();
+  agent.bind({
+    rpc: {
+      call: (async (method: string, args: unknown) => {
+        calls.push({ method, args });
+        return { ok: true };
+      }) as never,
+    },
+    context: { threadId: null, projectId: null, onNewThreadScreen: false },
+    openNewThread() {},
+  });
+  return { agent, calls };
+}
+
+test("mirrors a call owned by another realm from voice-presence", () => {
+  const agent = new VoiceAgent();
+  assert.equal(agent.getState(), "idle");
+
+  agent.ingestPresence({ nonce: "call-A", phase: "live", startedAt: 1000 });
+  assert.equal(agent.getState(), "live");
+  assert.equal(agent.getSessionId(), "call-A");
+  assert.equal(agent.getLiveStartedAt(), 1000);
+
+  agent.ingestPresence({ nonce: "call-A", phase: "muted", startedAt: 1000 });
+  assert.equal(agent.getState(), "muted");
+
+  // The owner announcing idle clears the mirror on every other surface.
+  agent.ingestPresence({ nonce: "call-A", phase: "idle", startedAt: null });
+  assert.equal(agent.getState(), "idle");
+  assert.equal(agent.getSessionId(), null);
+});
+
+test("ignores malformed or nonce-less presence", () => {
+  const agent = new VoiceAgent();
+  agent.ingestPresence(null);
+  agent.ingestPresence({ phase: "live" });
+  agent.ingestPresence({ nonce: "x", phase: "bogus" });
+  assert.equal(agent.getState(), "idle");
+});
+
+test("a mirrored call expires once its heartbeats lapse (no ghost live)", () => {
+  mock.timers.enable({ apis: ["Date", "setInterval"] });
+  try {
+    const agent = new VoiceAgent();
+    agent.ingestPresence({ nonce: "call-A", phase: "live", startedAt: 0 });
+    assert.equal(agent.getState(), "live");
+
+    mock.timers.tick(10_000); // still within the fresh window
+    assert.equal(agent.getState(), "live");
+
+    mock.timers.tick(20_000); // now past PRESENCE_STALE_MS (25s)
+    assert.equal(agent.getState(), "idle");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("stop/mute from a surface that doesn't own the call is relayed to the owner", () => {
+  const { agent, calls } = agentWithRpcSpy();
+  agent.ingestPresence({ nonce: "call-A", phase: "live", startedAt: 1000 });
+
+  agent.stopFromSurface();
+  assert.deepEqual(calls.at(-1), {
+    method: "sendVoiceCommand",
+    args: { nonce: "call-A", action: "stop" },
+  });
+
+  agent.toggleMuteFromSurface(); // live → mute
+  assert.deepEqual(calls.at(-1)?.args, { nonce: "call-A", action: "mute" });
+
+  agent.ingestPresence({ nonce: "call-A", phase: "muted", startedAt: 1000 });
+  agent.toggleMuteFromSurface(); // muted → unmute
+  assert.deepEqual(calls.at(-1)?.args, { nonce: "call-A", action: "unmute" });
+
+  agent.toggleFromSurface(); // a mirrored call is stopped, not re-toggled
+  assert.deepEqual(calls.at(-1)?.args, { nonce: "call-A", action: "stop" });
+
+  agent.ingestPresence({ nonce: "call-A", phase: "idle", startedAt: null });
+});
+
+test("a relayed command is ignored by a realm that doesn't own that call", () => {
+  const { agent, calls } = agentWithRpcSpy();
+  // Idle here: we own nothing, so an incoming command must be a no-op.
+  agent.applyVoiceCommand({ nonce: "call-A", action: "stop" });
+  assert.equal(agent.getState(), "idle");
+  assert.equal(calls.length, 0);
+});
 
 test("reloads audio preferences saved by another browser window", () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");

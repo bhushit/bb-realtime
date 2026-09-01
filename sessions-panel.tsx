@@ -112,7 +112,7 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
         type="button"
         aria-label="Start Aide voice agent"
         title="Talk to Aide"
-        onClick={() => voiceAgent.toggle()}
+        onClick={() => voiceAgent.toggleFromSurface()}
         className={cn(
           "flex h-11 items-center gap-2 rounded-full border border-border bg-card px-5 text-sm font-medium text-foreground shadow-lg transition-colors hover:bg-accent",
           connecting && "animate-pulse",
@@ -169,7 +169,7 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
           title={muted ? "Unmute" : "Mute"}
-          onClick={() => voiceAgent.toggleMute()}
+          onClick={() => voiceAgent.toggleMuteFromSurface()}
           className={cn(
             "flex size-11 shrink-0 items-center justify-center transition-colors",
             muted
@@ -192,7 +192,7 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
           type="button"
           aria-label="Stop Aide voice session"
           title="Stop"
-          onClick={() => voiceAgent.stop()}
+          onClick={() => voiceAgent.stopFromSurface()}
           className="flex size-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
         >
           <StopIcon />
@@ -701,6 +701,11 @@ export function SessionsPanel() {
     const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId;
     if (selected && sessionId === selected) refetchEvents(selected);
   });
+
+  // Cross-surface presence: mirror a call owned by another realm so the console
+  // reflects it, and relay stop/mute from the console back to the owning realm.
+  useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
+  useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
 
   // Auto-follow the transcript: after opening it, or when new events land while
   // you're already reading the bottom, snap to the latest — but if you've
