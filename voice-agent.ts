@@ -70,6 +70,12 @@ interface SessionHandle {
   stream: MediaStream;
   audio: HTMLAudioElement;
   dc: RTCDataChannel | null;
+  /** The live mic track feeding the pc; swapped in when iOS suspends the mic. */
+  micTrack: MediaStreamTrack | null;
+  /** The pc's audio sender, so a fresh mic track can replace a suspended one. */
+  micSender: RTCRtpSender | null;
+  /** Tears down the page/visibility listeners installed for this session. */
+  disposeLifecycle?: () => void;
 }
 
 /**
@@ -151,6 +157,12 @@ export class VoiceAgent {
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   /** When the call first went live (ms), for elapsed-duration UI; null if not. */
   private liveStartedAt: number | null = null;
+  /**
+   * True while the OS has suspended the mic (typically iOS backgrounding the
+   * owning realm). The uplink is dead until recovered — surfaced honestly rather
+   * than leaving the call looking "Connected" while Aide can't hear you.
+   */
+  private micSuspended = false;
   /** The most recent meaningful event, for the dock's live activity ticker. */
   private lastActivity: { kind: string; name: string; text: string } | null = null;
   /**
@@ -222,6 +234,20 @@ export class VoiceAgent {
     if (this.assistantSpeaking) return "aide";
     return "idle";
   };
+
+  /**
+   * True when THIS realm owns a call whose mic the OS has suspended — the
+   * uplink is down (Aide can't hear you) until it comes back to the foreground
+   * and recovers. Only meaningful for the owner; mirrors don't hold the mic.
+   */
+  readonly getMicSuspended = (): boolean =>
+    this.micSuspended && (this.state === "live" || this.state === "muted");
+
+  private setMicSuspended(value: boolean) {
+    if (this.micSuspended === value) return;
+    this.micSuspended = value;
+    this.emitChange();
+  }
 
   private setUserSpeaking(value: boolean) {
     if (this.userSpeaking === value) return;
@@ -550,11 +576,104 @@ export class VoiceAgent {
       .catch(() => undefined);
   }
 
+  // ---- audio lifecycle: keep inbound audio playing and the mic alive across
+  // navigation/backgrounding (see HF-2). Everything here is defensive; a browser
+  // without DOM (tests) simply skips the DOM/track wiring.
+
+  /** Inline playback + in-DOM element: the reliable iOS shape for WebRTC audio. */
+  private prepareAudioElement(audio: HTMLAudioElement) {
+    (audio as HTMLAudioElement & { playsInline?: boolean }).playsInline = true;
+    if (typeof document === "undefined") return;
+    try {
+      audio.setAttribute("playsinline", "");
+      audio.style.display = "none";
+      document.body.appendChild(audio);
+    } catch {
+      /* no DOM to attach to — inbound audio still plays via srcObject */
+    }
+  }
+
+  /**
+   * Watch a mic track for OS suspension. iOS mutes (and sometimes ends) the mic
+   * track when it backgrounds the owning realm; `enabled=false` from our own
+   * mute does NOT fire these, so `mute` here always means the source stopped.
+   */
+  private attachMicLifecycle(session: SessionHandle, track: MediaStreamTrack) {
+    track.onmute = () => {
+      if (this.session !== session) return;
+      this.logDiag("mic.track.muted", {});
+      this.setMicSuspended(true);
+    };
+    track.onunmute = () => {
+      if (this.session !== session) return;
+      this.logDiag("mic.track.unmuted", {});
+      this.setMicSuspended(false); // OS resumed the same track — uplink is back
+    };
+    track.onended = () => {
+      if (this.session !== session) return;
+      this.logDiag("mic.track.ended", {});
+      this.setMicSuspended(true);
+      void this.recoverMicIfNeeded(session);
+    };
+  }
+
+  /** On returning to the foreground, try to revive a suspended mic. */
+  private attachPageLifecycle(session: SessionHandle) {
+    if (typeof document === "undefined") return;
+    const onVisibility = () => {
+      if (this.session !== session) return;
+      this.logDiag("page.visibility", { state: document.visibilityState });
+      if (document.visibilityState === "visible") void this.recoverMicIfNeeded(session);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    session.disposeLifecycle = () => document.removeEventListener("visibilitychange", onVisibility);
+  }
+
+  /**
+   * Replace a dead/suspended mic track with a fresh one, keeping the same pc and
+   * realtime session (replaceTrack needs no renegotiation). Only attempts in the
+   * foreground — iOS blocks getUserMedia while backgrounded. A no-op when the mic
+   * is already healthy.
+   */
+  private async recoverMicIfNeeded(session: SessionHandle) {
+    if (this.session !== session) return;
+    const sender = session.micSender;
+    const track = session.micTrack;
+    if (!sender) return;
+    if (track && track.readyState === "live" && !track.muted) {
+      this.setMicSuspended(false); // already healthy
+      return;
+    }
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    this.logDiag("mic.recover.attempt", { readyState: track?.readyState ?? null, muted: track?.muted ?? null });
+    try {
+      const fresh = await this.acquireMic(this.audioPreferences.inputDeviceId);
+      if (this.session !== session) {
+        for (const t of fresh.getTracks()) t.stop();
+        return;
+      }
+      const newTrack = fresh.getAudioTracks()[0];
+      if (!newTrack) throw new Error("no audio track");
+      newTrack.enabled = this.state !== "muted"; // preserve the user's mute
+      await sender.replaceTrack(newTrack);
+      session.micTrack?.stop();
+      session.micTrack = newTrack;
+      this.attachMicLifecycle(session, newTrack);
+      this.setMicSuspended(false);
+      this.logDiag("mic.recover.ok", {});
+    } catch (error) {
+      this.logDiag("mic.recover.failed", { name: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+
   /** Mute = mic track sends silence; the call and playback stay up. */
   setMuted(muted: boolean) {
     const session = this.session;
     if (!session || (this.state !== "live" && this.state !== "muted")) return;
-    for (const track of session.stream.getAudioTracks()) track.enabled = !muted;
+    // Prefer the tracked mic track — recovery may have replaced it with one that
+    // is no longer part of the original getUserMedia stream.
+    if (session.micTrack) session.micTrack.enabled = !muted;
+    else for (const track of session.stream.getAudioTracks()) track.enabled = !muted;
     this.log(muted ? "muted" : "unmuted");
     this.setUserSpeaking(false); // a muted mic can't be mid-utterance
     this.setState(muted ? "muted" : "live");
@@ -657,10 +776,13 @@ export class VoiceAgent {
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.noticeTimer = null;
     this.setUserSpeaking(false);
+    this.setMicSuspended(false);
     if (session) {
+      session.disposeLifecycle?.();
       session.dc?.close();
       session.pc.close();
       for (const track of session.stream.getTracks()) track.stop();
+      session.micTrack?.stop(); // a recovered track lives outside stream
       session.audio.srcObject = null;
       session.audio.remove();
     }
@@ -795,7 +917,11 @@ export class VoiceAgent {
       const pc = new RTCPeerConnection();
       const audio = new Audio();
       audio.autoplay = true;
-      const session: SessionHandle = { pc, stream, audio, dc: null };
+      // iOS plays inline (not fullscreen) and is far more reliable across
+      // navigation/backgrounding when the element is actually in the DOM — a
+      // detached `new Audio()` can go silent. Hidden so it never shows.
+      this.prepareAudioElement(audio);
+      const session: SessionHandle = { pc, stream, audio, dc: null, micTrack: null, micSender: null };
       this.session = session;
       // Never stay "connecting" forever: if the data channel hasn't opened in
       // time, tear the attempt down and let the user retry cleanly.
@@ -810,6 +936,13 @@ export class VoiceAgent {
       if (this.session?.pc !== pc) return;
 
       for (const track of stream.getTracks()) pc.addTrack(track, stream);
+      // Track the mic sender + track so a suspended mic (iOS backgrounding) can
+      // be swapped for a fresh one via replaceTrack, no renegotiation needed.
+      session.micTrack = stream.getAudioTracks()[0] ?? null;
+      session.micSender =
+        pc.getSenders?.().find((sender) => sender.track?.kind === "audio") ?? null;
+      if (session.micTrack) this.attachMicLifecycle(session, session.micTrack);
+      this.attachPageLifecycle(session);
       pc.ontrack = (event) => {
         if (this.session?.pc !== pc) return; // torn down mid-negotiation
         audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);

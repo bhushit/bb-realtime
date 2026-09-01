@@ -40,6 +40,7 @@ function AideVoiceButton() {
   const sidebarActions = experimental_useSidebarThreadActions();
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
+  const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
 
   // Global exclusivity: when any window starts a call, all others stop theirs.
   useRealtime("voice-call", (payload) => {
@@ -104,13 +105,17 @@ function AideVoiceButton() {
     // by the slashed mic on the left button, not by graying this out.
     const speaking = activity === "aide";
     const listening = activity === "you"; // never true while muted (mic is off)
-    const middleLabel = speaking
-      ? "Aide speaking…"
-      : listening
-        ? "Listening…"
-        : muted
-          ? "Muted"
-          : "Connected";
+    // A suspended mic (iOS backgrounding) means Aide can't hear you — say so
+    // rather than showing a reassuring "Connected".
+    const middleLabel = micSuspended
+      ? "Mic paused"
+      : speaking
+        ? "Aide speaking…"
+        : listening
+          ? "Listening…"
+          : muted
+            ? "Muted"
+            : "Connected";
     return (
       <div className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
         <button
@@ -133,11 +138,13 @@ function AideVoiceButton() {
             "flex h-7 items-center justify-center px-2 transition-colors",
             // Aide can still be talking while you're muted, so who's-speaking
             // wins over the muted/quiet dim (mute is shown by the slashed mic).
-            speaking
-              ? "text-[color:var(--success,#6faf76)]" // themed green for Aide
-              : listening
-                ? "text-foreground"
-                : "text-muted-foreground/60",
+            micSuspended
+              ? "text-destructive" // uplink down — surface it, don't reassure
+              : speaking
+                ? "text-[color:var(--success,#6faf76)]" // themed green for Aide
+                : listening
+                  ? "text-foreground"
+                  : "text-muted-foreground/60",
           )}
           title={middleLabel}
           aria-label={middleLabel}

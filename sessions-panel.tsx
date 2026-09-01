@@ -99,6 +99,7 @@ function GearIcon() {
 function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sessionId: string) => void; selectedId: string | null }) {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
+  const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
   const lastActivity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getLastActivity);
   const elapsed = useCallElapsed();
   const live = state === "live";
@@ -126,18 +127,22 @@ function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sess
 
   const speaking = activity === "aide";
   const listening = activity === "you";
-  const activityColor = speaking
-    ? "text-[color:var(--success,#6faf76)]" // Aide
-    : listening
-      ? "text-foreground" // you
-      : "text-muted-foreground/70";
-  const label = speaking
-    ? "Aide speaking…"
-    : listening
-      ? "Listening…"
-      : muted
-        ? "Muted"
-        : "Connected";
+  const activityColor = micSuspended
+    ? "text-destructive" // uplink down (iOS backgrounded the mic)
+    : speaking
+      ? "text-[color:var(--success,#6faf76)]" // Aide
+      : listening
+        ? "text-foreground" // you
+        : "text-muted-foreground/70";
+  const label = micSuspended
+    ? "Mic paused"
+    : speaking
+      ? "Aide speaking…"
+      : listening
+        ? "Listening…"
+        : muted
+          ? "Muted"
+          : "Connected";
   const liveId = voiceAgent.getSessionId();
   const ticker = tickerFor(lastActivity);
   // When you're already reading the live transcript, the ticker (and the pill's
