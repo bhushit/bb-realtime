@@ -833,27 +833,21 @@ export function SessionsPanel() {
                     key={session.id}
                     type="button"
                     onClick={() => setSelected(session.id)}
-                    className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-accent"
+                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent"
                   >
-                    <span className="mt-1 flex w-12 shrink-0 justify-start">
-                      {isLive(session) ? (
-                        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                          <span className="size-1.5 animate-pulse rounded-full bg-primary" />
-                          Live
-                        </span>
-                      ) : session.hasError ? (
-                        <span className="text-xs text-destructive" title="This session had an error">⚠</span>
-                      ) : null}
-                    </span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm text-foreground">
                         {session.preview || <span className="italic text-muted-foreground">No transcript</span>}
                       </span>
                       <span className="mt-0.5 block text-xs tabular-nums text-muted-foreground">
-                        {fmtDate(session.startedAt)} · {duration(session.startedAt, session.lastEventAt)} · {session.events} events
-                        {session.costUsd > 0 ? ` · ~$${session.costUsd.toFixed(4)}` : ""}
+                        {fmtDate(session.startedAt)} · {duration(session.startedAt, session.lastEventAt)}
                       </span>
                     </span>
+                    {isLive(session) ? (
+                      <span className="size-2 shrink-0 animate-pulse rounded-full bg-primary" title="Live" />
+                    ) : session.hasError ? (
+                      <span className="shrink-0 text-xs text-destructive" title="This session had an error">⚠</span>
+                    ) : null}
                   </button>
                 ))
               )}
