@@ -615,6 +615,9 @@ export function SessionsPanel() {
   const [errorsOnly, setErrorsOnly] = useState(false);
   const [plugins, setPlugins] = useState<Map<string, PluginMeta>>(() => new Map());
   const [error, setError] = useState<string | null>(null);
+  // The call active in THIS window always reads live, overriding the server's
+  // stale heuristic (which can't see an active-but-quiet call).
+  const activeSessionId = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getSessionId);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Set when the transcript is opened so the first batch of events snaps to the
   // bottom (latest), even if the list is taller than the viewport.
@@ -713,6 +716,7 @@ export function SessionsPanel() {
   }, [events, selected]);
 
   const current = sessions?.find((session) => session.id === selected) ?? null;
+  const isLive = (session: SessionRow): boolean => !session.ended || session.id === activeSessionId;
   const query = search.trim().toLowerCase();
   // Client-side filter over already-loaded sessions (Load more fetches the rest).
   const visibleSessions = sessions?.filter(
@@ -740,7 +744,7 @@ export function SessionsPanel() {
             </div>
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-3.5 py-2.5">
               <div className="flex items-center gap-2.5">
-                {current && !current.ended ? (
+                {current && isLive(current) ? (
                   <span className="size-2.5 shrink-0 animate-pulse rounded-full bg-primary" />
                 ) : null}
                 <div className="leading-tight">
@@ -748,7 +752,7 @@ export function SessionsPanel() {
                     {current ? fmtDate(current.startedAt) : "Live session"}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    {current ? (current.ended ? "Ended" : "Live now") : "Connecting…"}
+                    {current ? (isLive(current) ? "Live now" : "Ended") : "Connecting…"}
                     {current ? ` · ${duration(current.startedAt, current.lastEventAt)}` : ""}
                   </div>
                 </div>
@@ -832,7 +836,7 @@ export function SessionsPanel() {
                     className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-accent"
                   >
                     <span className="mt-1 flex w-12 shrink-0 justify-start">
-                      {!session.ended ? (
+                      {isLive(session) ? (
                         <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
                           <span className="size-1.5 animate-pulse rounded-full bg-primary" />
                           Live

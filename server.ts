@@ -1192,7 +1192,12 @@ export default async function plugin(bb: BbPluginApi) {
           startedAt: row.startedAt,
           lastEventAt: row.lastEventAt,
           events: row.events,
-          ended: row.stopped > 0,
+          // Ended if it logged session.stopped, OR it went quiet long ago: a
+          // call that dies uncleanly (page unload, torn-down WebRTC on
+          // navigation, app killed on mobile) never logs session.stopped, so
+          // without this stale check every crashed session shows "live" forever.
+          // The active window overrides this to keep a genuinely live call live.
+          ended: row.stopped > 0 || Date.now() - row.lastEventAt > 300_000,
           costUsd: Number(
             (costStmt.all(row.id) as UsageRow[]).reduce((sum, usage) => sum + costUsd(usage), 0).toFixed(4),
           ),
