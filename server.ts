@@ -895,8 +895,23 @@ export default async function plugin(bb: BbPluginApi) {
           prompt,
           ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
         });
-        await bb.sdk.threads.open({ threadId: thread.id, file: null }).catch(() => undefined);
-        return JSON.stringify({ started: (await withMachines([describeThread(thread)]))[0] });
+        // `threads.open` navigates every connected window — which backgrounds a
+        // live mobile call (and yanks other windows). The client sets focus:false
+        // when it must not navigate; the thread still spawns and runs.
+        const shouldFocus = args.focus !== false;
+        if (shouldFocus) {
+          await bb.sdk.threads.open({ threadId: thread.id, file: null }).catch(() => undefined);
+        }
+        const started = (await withMachines([describeThread(thread)]))[0];
+        return JSON.stringify(
+          shouldFocus
+            ? { started }
+            : {
+                started,
+                focused: false,
+                note: "Started and running, but NOT brought on screen (that would drop the live call on this phone). Tell the user in one short sentence that it's running and they can tap it in the thread list.",
+              },
+        );
       }
       case "stop_thread": {
         await bb.sdk.threads.stop({ threadId: str("thread_id") });

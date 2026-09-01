@@ -947,10 +947,18 @@ export class VoiceAgent {
       output =
         "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. Instead, tell the user in one short sentence exactly what to tap to get there themselves.";
     } else {
+      // start_thread navigates (spawn → threads.open) which backgrounds a live
+      // mobile call — tell the server not to focus so the thread still starts but
+      // nothing navigates. (The promptless start_thread is handled above.)
+      const suppressFocus =
+        name === "start_thread" &&
+        clientDescriptor.mobile &&
+        (this.state === "live" || this.state === "muted");
+      if (suppressFocus) this.logDiag("nav.suppressedFocus", { name });
       try {
         const result = await bindings.rpc.call("runTool", {
           name,
-          args,
+          args: suppressFocus ? { ...args, focus: false } : args,
           ...bindings.context,
         });
         output = result.output;
