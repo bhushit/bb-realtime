@@ -17,6 +17,8 @@ function agentWithRpcSpy() {
     context: { threadId: null, projectId: null, onNewThreadScreen: false },
     openNewThread() {},
   });
+  // bind() emits a one-time client.hello diagnostic; drop it so tests start clean.
+  calls.length = 0;
   return { agent, calls };
 }
 
@@ -67,21 +69,24 @@ test("stop/mute from a surface that doesn't own the call is relayed to the owner
   const { agent, calls } = agentWithRpcSpy();
   agent.ingestPresence({ nonce: "call-A", phase: "live", startedAt: 1000 });
 
+  // Commands also carry client/realm identity (observability); assert the parts
+  // that matter for routing.
+  const lastCommand = () => calls.at(-1)?.args as { nonce: string; action: string };
+
   agent.stopFromSurface();
-  assert.deepEqual(calls.at(-1), {
-    method: "sendVoiceCommand",
-    args: { nonce: "call-A", action: "stop" },
-  });
+  assert.equal(calls.at(-1)?.method, "sendVoiceCommand");
+  assert.equal(lastCommand().nonce, "call-A");
+  assert.equal(lastCommand().action, "stop");
 
   agent.toggleMuteFromSurface(); // live → mute
-  assert.deepEqual(calls.at(-1)?.args, { nonce: "call-A", action: "mute" });
+  assert.equal(lastCommand().action, "mute");
 
   agent.ingestPresence({ nonce: "call-A", phase: "muted", startedAt: 1000 });
   agent.toggleMuteFromSurface(); // muted → unmute
-  assert.deepEqual(calls.at(-1)?.args, { nonce: "call-A", action: "unmute" });
+  assert.equal(lastCommand().action, "unmute");
 
   agent.toggleFromSurface(); // a mirrored call is stopped, not re-toggled
-  assert.deepEqual(calls.at(-1)?.args, { nonce: "call-A", action: "stop" });
+  assert.equal(lastCommand().action, "stop");
 
   agent.ingestPresence({ nonce: "call-A", phase: "idle", startedAt: null });
 });

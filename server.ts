@@ -189,6 +189,9 @@ export const rpcContract = defineRpcContract({
         nonce: z.string().min(1),
         phase: z.enum(["connecting", "live", "muted", "idle"]),
         startedAt: z.number().nullable(),
+        /** Which client/realm owns this call (observability; see client-identity). */
+        client: z.string().optional(),
+        realm: z.string().optional(),
       })
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
@@ -212,6 +215,9 @@ export const rpcContract = defineRpcContract({
       .object({
         nonce: z.string().min(1),
         action: z.enum(["stop", "mute", "unmute"]),
+        /** Which client/realm issued the command (observability). */
+        client: z.string().optional(),
+        realm: z.string().optional(),
       })
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
@@ -1184,7 +1190,12 @@ export default async function plugin(bb: BbPluginApi) {
       // Mirror audio/mic lifecycle diagnostics to the plugin log so `bb plugin
       // logs handsfree` surfaces mic/speaker/backgrounding problems (HF-2)
       // without opening the DB.
-      if (kind.startsWith("audio.") || kind.startsWith("mic.") || kind.startsWith("page.")) {
+      if (
+        kind.startsWith("audio.") ||
+        kind.startsWith("mic.") ||
+        kind.startsWith("page.") ||
+        kind.startsWith("client.")
+      ) {
         const detail = JSON.stringify(payload);
         if (kind.endsWith(".failed")) bb.log.error(`${kind} ${detail}`);
         else bb.log.info(`${kind} ${detail}`);
@@ -1192,16 +1203,16 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("aide-log", { sessionId });
       return { ok: true as const };
     },
-    async publishPresence({ nonce, phase, startedAt }) {
-      bb.realtime.publish("voice-presence", { nonce, phase, startedAt });
+    async publishPresence({ nonce, phase, startedAt, client, realm }) {
+      bb.realtime.publish("voice-presence", { nonce, phase, startedAt, client, realm });
       return { ok: true as const };
     },
     async requestPresence() {
       bb.realtime.publish("voice-presence-query", {});
       return { ok: true as const };
     },
-    async sendVoiceCommand({ nonce, action }) {
-      bb.realtime.publish("voice-command", { nonce, action });
+    async sendVoiceCommand({ nonce, action, client, realm }) {
+      bb.realtime.publish("voice-command", { nonce, action, client, realm });
       return { ok: true as const };
     },
     async listSessions(input) {

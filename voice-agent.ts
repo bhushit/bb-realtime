@@ -15,6 +15,7 @@ import {
   writeAudioDevicePreferences,
   type AudioDevicePreferences,
 } from "./audio-devices.ts";
+import { clientId, realmId, identityTag } from "./client-identity.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 /** Who currently has the floor during a live call, for the "listening" UI. */
@@ -32,6 +33,9 @@ interface RemotePresence {
   phase: Exclude<VoiceState, "idle">;
   startedAt: number | null;
   receivedAt: number;
+  /** Which client/realm owns the mirrored call (observability / future "live on X"). */
+  ownerClient?: string;
+  ownerRealm?: string;
 }
 
 /** A mirror is stale (owner realm likely gone) after two missed heartbeats. */
@@ -175,6 +179,8 @@ export class VoiceAgent {
   private presenceTimer: ReturnType<typeof setInterval> | null = null;
   /** Expires a stale mirror (owner realm gone) so we never show a ghost call. */
   private remoteExpiryTimer: ReturnType<typeof setInterval> | null = null;
+  /** Guards the once-per-realm `client.hello` observability record. */
+  private helloed = false;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -271,6 +277,7 @@ export class VoiceAgent {
 
   bind(bindings: Bindings) {
     this.bindings = bindings;
+    this.helloOnce();
   }
 
   /**
@@ -281,6 +288,20 @@ export class VoiceAgent {
    */
   bindFallback(bindings: Bindings) {
     if (!this.bindings) this.bindings = bindings;
+    this.helloOnce();
+  }
+
+  /**
+   * Announce this realm once it can talk to the backend, so every surface (even
+   * idle ones that never start a call) leaves a durable record of its client +
+   * realm id. This is how we enumerate "which realms exist on which client".
+   */
+  private helloOnce() {
+    if (this.helloed || !this.bindings) return;
+    this.helloed = true;
+    this.logDiag("client.hello", {
+      surface: typeof document !== "undefined" ? document.visibilityState : "unknown",
+    });
   }
 
   private setState(next: VoiceState) {
@@ -307,7 +328,7 @@ export class VoiceAgent {
     const rpc = this.bindings?.rpc;
     if (!rpc) return;
     void rpc
-      .call("publishPresence", { nonce, phase, startedAt: this.liveStartedAt })
+      .call("publishPresence", { nonce, phase, startedAt: this.liveStartedAt, client: clientId, realm: realmId })
       .catch(() => undefined);
   }
 
@@ -347,7 +368,9 @@ export class VoiceAgent {
    * remote call so this realm's controls reflect it.
    */
   ingestPresence(payload: unknown) {
-    const p = payload as { nonce?: unknown; phase?: unknown; startedAt?: unknown } | null;
+    const p = payload as
+      | { nonce?: unknown; phase?: unknown; startedAt?: unknown; client?: unknown; realm?: unknown }
+      | null;
     const nonce = typeof p?.nonce === "string" ? p.nonce : null;
     if (!nonce || nonce === this.nonce || this.hasLocalCall()) return;
     const phase = p?.phase;
@@ -363,7 +386,9 @@ export class VoiceAgent {
     }
     if (phase !== "connecting" && phase !== "live" && phase !== "muted") return;
     const startedAt = typeof p?.startedAt === "number" ? p.startedAt : null;
-    this.remotePresence = { nonce, phase, startedAt, receivedAt: Date.now() };
+    const ownerClient = typeof p?.client === "string" ? p.client : undefined;
+    const ownerRealm = typeof p?.realm === "string" ? p.realm : undefined;
+    this.remotePresence = { nonce, phase, startedAt, receivedAt: Date.now(), ownerClient, ownerRealm };
     this.armRemoteExpiry();
     this.emitChange();
   }
@@ -393,7 +418,9 @@ export class VoiceAgent {
   private sendCommand(nonce: string, action: VoiceCommandAction) {
     const rpc = this.bindings?.rpc;
     if (!rpc) return;
-    void rpc.call("sendVoiceCommand", { nonce, action }).catch(() => undefined);
+    void rpc
+      .call("sendVoiceCommand", { nonce, action, client: clientId, realm: realmId })
+      .catch(() => undefined);
   }
 
   /** Apply a relayed command — but only if THIS realm owns that call. */
@@ -548,7 +575,11 @@ export class VoiceAgent {
     const bindings = this.bindings;
     if (!sessionId || !bindings) return;
     this.noteActivity(kind, payload);
-    void bindings.rpc.call("logEvent", { sessionId, kind, payload }).catch(() => undefined);
+    // Stamp which client/realm produced this event (see client-identity.ts) so
+    // the transcript/DB shows where things actually happened across surfaces.
+    void bindings.rpc
+      .call("logEvent", { sessionId, kind, payload: { ...payload, _id: identityTag() } })
+      .catch(() => undefined);
   }
 
   /** Track the latest meaningful event for the dock ticker (ignores diagnostics). */
@@ -572,7 +603,11 @@ export class VoiceAgent {
     const rpc = this.bindings?.rpc;
     if (!rpc) return;
     void rpc
-      .call("logEvent", { sessionId: this.nonce ?? "audio-diagnostics", kind, payload })
+      .call("logEvent", {
+        sessionId: this.nonce ?? "audio-diagnostics",
+        kind,
+        payload: { ...payload, _id: identityTag() },
+      })
       .catch(() => undefined);
   }
 
