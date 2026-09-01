@@ -15,7 +15,7 @@ import {
   writeAudioDevicePreferences,
   type AudioDevicePreferences,
 } from "./audio-devices.ts";
-import { clientId, realmId, identityTag, clientDescriptor } from "./client-identity.ts";
+import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 /** Who currently has the floor during a live call, for the "listening" UI. */
@@ -1005,7 +1005,7 @@ export class VoiceAgent {
     const nonce = crypto.randomUUID();
     this.nonce = nonce;
     this.setState("connecting");
-    this.log("session.started", { ...bindings.context });
+    this.log("session.started", { ...bindings.context, device: deviceSummary() });
     try {
       // Deterministic acquisition: enumerate what is actually present, resolve
       // the saved ids against it (a saved id whose salt rotated across restarts

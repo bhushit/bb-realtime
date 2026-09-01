@@ -249,6 +249,16 @@ export const rpcContract = defineRpcContract({
               costUsd: z.number(),
               preview: z.string(),
               hasError: z.boolean(),
+              /** Which device the call came through (from session.started); null for old sessions. */
+              device: z
+                .object({
+                  label: z.string(),
+                  mobile: z.boolean(),
+                  platform: z.string(),
+                  browser: z.string(),
+                  runtime: z.string(),
+                })
+                .nullable(),
             })
             .strict(),
         ),
@@ -1281,6 +1291,27 @@ export default async function plugin(bb: BbPluginApi) {
       const errorStmt = db.prepare(
         "SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'error' LIMIT 1",
       );
+      const deviceStmt = db.prepare(
+        "SELECT payload FROM session_events WHERE session_id = ? AND kind = 'session.started' ORDER BY ts LIMIT 1",
+      );
+      const device = (sessionId: string) => {
+        const found = deviceStmt.get(sessionId) as { payload: string } | undefined;
+        if (!found) return null;
+        try {
+          const d = (JSON.parse(found.payload) as { device?: unknown }).device;
+          if (!d || typeof d !== "object") return null;
+          const o = d as Record<string, unknown>;
+          return {
+            label: String(o.label ?? ""),
+            mobile: Boolean(o.mobile),
+            platform: String(o.platform ?? ""),
+            browser: String(o.browser ?? ""),
+            runtime: String(o.runtime ?? ""),
+          };
+        } catch {
+          return null;
+        }
+      };
       const preview = (sessionId: string): string => {
         const found = previewStmt.get(sessionId) as { payload: string } | undefined;
         if (!found) return "";
@@ -1309,6 +1340,7 @@ export default async function plugin(bb: BbPluginApi) {
           ),
           preview: preview(row.id),
           hasError: errorStmt.get(row.id) !== undefined,
+          device: device(row.id),
         })),
       };
     },

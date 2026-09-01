@@ -16,6 +16,13 @@ import { voiceAgent } from "./voice-agent";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
 import { cn } from "@/lib/utils";
 
+interface DeviceInfo {
+  label: string;
+  mobile: boolean;
+  platform: string;
+  browser: string;
+  runtime: string;
+}
 interface SessionRow {
   id: string;
   startedAt: number;
@@ -25,6 +32,40 @@ interface SessionRow {
   costUsd: number;
   preview: string;
   hasError: boolean;
+  device: DeviceInfo | null;
+}
+
+/** A phone glyph for mobile clients, a monitor for everything else. */
+function DeviceIcon({ mobile, className }: { mobile: boolean; className?: string }) {
+  return mobile ? (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden>
+      <rect x="4.5" y="1.5" width="7" height="13" rx="1.6" />
+      <path d="M7 12.5h2" strokeLinecap="round" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden>
+      <rect x="1.5" y="2.5" width="13" height="8.5" rx="1.4" />
+      <path d="M6 14h4M8 11v3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** A friendly one-word runtime for the session header. */
+function runtimeLabel(runtime: string): string {
+  return runtime === "electron"
+    ? "desktop app"
+    : runtime === "native-webview"
+      ? "native app"
+      : runtime === "pwa"
+        ? "installed"
+        : runtime === "browser"
+          ? "browser"
+          : runtime;
+}
+
+/** "iOS · Safari · native app" — omits blanks. */
+function deviceDetail(d: DeviceInfo): string {
+  return [d.platform, d.browser, runtimeLabel(d.runtime)].filter(Boolean).join(" · ");
 }
 interface EventRow {
   id: number;
@@ -771,6 +812,12 @@ export function SessionsPanel() {
                     {current ? (isLive(current) ? "Live now" : "Ended") : "Connecting…"}
                     {current ? ` · ${duration(current.startedAt, current.lastEventAt)}` : ""}
                   </div>
+                  {current?.device ? (
+                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground/80">
+                      <DeviceIcon mobile={current.device.mobile} className="size-3.5 shrink-0" />
+                      <span className="truncate">{deviceDetail(current.device)}</span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               {current ? (
@@ -859,6 +906,11 @@ export function SessionsPanel() {
                         {fmtDate(session.startedAt)} · {duration(session.startedAt, session.lastEventAt)}
                       </span>
                     </span>
+                    {session.device ? (
+                      <span title={session.device.label} className="flex shrink-0 items-center">
+                        <DeviceIcon mobile={session.device.mobile} className="size-4 text-muted-foreground/50" />
+                      </span>
+                    ) : null}
                     {isLive(session) ? (
                       <span className="size-2 shrink-0 animate-pulse rounded-full bg-primary" title="Live" />
                     ) : session.hasError ? (

@@ -141,3 +141,15 @@ function describeClient(): ClientDescriptor {
 
 /** Computed once at module load; stable for this realm. */
 export const clientDescriptor: ClientDescriptor = describeClient();
+
+/** Compact device summary to stamp on session.started (no raw UA). */
+export function deviceSummary(): {
+  label: string;
+  mobile: boolean;
+  platform: string;
+  browser: string;
+  runtime: string;
+} {
+  const d = clientDescriptor;
+  return { label: d.label, mobile: d.mobile, platform: d.platform, browser: d.browser, runtime: d.runtime };
+}
