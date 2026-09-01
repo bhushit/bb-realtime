@@ -706,6 +706,12 @@ export function SessionsPanel() {
   // reflects it, and relay stop/mute from the console back to the owning realm.
   useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
   useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
+  useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());
+
+  // Catch up the moment the page mounts (e.g. a realm rebuilt after navigating
+  // back) instead of waiting up to a heartbeat — this is the "shows Talk to Aide
+  // over a live call, then flips to Connected a few seconds later" gap.
+  useEffect(() => voiceAgent.requestPresence(), []);
 
   // Auto-follow the transcript: after opening it, or when new events land while
   // you're already reading the bottom, snap to the latest — but if you've

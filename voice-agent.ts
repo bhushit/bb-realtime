@@ -285,6 +285,22 @@ export class VoiceAgent {
       .catch(() => undefined);
   }
 
+  /**
+   * Ask any realm that owns a live call to re-announce it now. A surface calls
+   * this on mount so it catches up immediately instead of waiting up to a full
+   * heartbeat — the "briefly shows Talk to Aide over a live call" gap.
+   */
+  requestPresence() {
+    const rpc = this.bindings?.rpc;
+    if (!rpc) return;
+    void rpc.call("requestPresence", null).catch(() => undefined);
+  }
+
+  /** Re-announce our call in response to a peer's mount-time presence request. */
+  answerPresenceQuery() {
+    if (this.nonce && this.hasLocalCall()) this.broadcastPresence(this.state, this.nonce);
+  }
+
   /** Keep remote mirrors fresh while we own a live call (see PRESENCE_STALE_MS). */
   private startPresenceHeartbeat() {
     this.stopPresenceHeartbeat();

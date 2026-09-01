@@ -194,6 +194,16 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   /**
+   * Ask whoever owns a live call to re-announce its presence right now. A
+   * freshly mounted surface (e.g. a page realm rebuilt after mobile navigation)
+   * fires this so it catches up immediately instead of waiting up to a full
+   * heartbeat — otherwise it briefly shows "idle" over a call that is live.
+   */
+  requestPresence: {
+    input: z.null(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /**
    * Relay a control intent (stop/mute/unmute) from a surface that does NOT own
    * the call to the realm that does. Only the owner (matching nonce) acts on it.
    */
@@ -1183,6 +1193,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async publishPresence({ nonce, phase, startedAt }) {
       bb.realtime.publish("voice-presence", { nonce, phase, startedAt });
+      return { ok: true as const };
+    },
+    async requestPresence() {
+      bb.realtime.publish("voice-presence-query", {});
       return { ok: true as const };
     },
     async sendVoiceCommand({ nonce, action }) {

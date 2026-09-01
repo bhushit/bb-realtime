@@ -86,6 +86,17 @@ test("stop/mute from a surface that doesn't own the call is relayed to the owner
   agent.ingestPresence({ nonce: "call-A", phase: "idle", startedAt: null });
 });
 
+test("presence catch-up: a surface requests, a non-owner never answers", () => {
+  const { agent, calls } = agentWithRpcSpy();
+  agent.requestPresence();
+  assert.deepEqual(calls.at(-1), { method: "requestPresence", args: null });
+
+  // We own no call, so a peer's query must NOT make us publish presence.
+  calls.length = 0;
+  agent.answerPresenceQuery();
+  assert.equal(calls.length, 0);
+});
+
 test("a relayed command is ignored by a realm that doesn't own that call", () => {
   const { agent, calls } = agentWithRpcSpy();
   // Idle here: we own nothing, so an incoming command must be a no-op.

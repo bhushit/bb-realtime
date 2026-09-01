@@ -57,6 +57,11 @@ function AideVoiceButton() {
   // reflects it, and relay stop/mute back to whichever realm owns the call.
   useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
   useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
+  useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());
+
+  // Catch up immediately when this surface mounts (e.g. a realm rebuilt after
+  // navigation), rather than waiting up to a heartbeat to learn a call is live.
+  useEffect(() => voiceAgent.requestPresence(), []);
 
   // Thread-event notifications (digested; disabled via `notifications` setting).
   useRealtime("aide-thread-event", (payload) => {
