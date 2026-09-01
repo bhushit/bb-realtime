@@ -35,7 +35,12 @@ export interface Bindings {
     /** True when the user is on the New thread screen (no thread exists yet). */
     onNewThreadScreen: boolean;
   };
-  composer: ComposerBinding;
+  /**
+   * The composer to type into — present only when a composer surface is mounted
+   * (e.g. a thread view). Absent on surfaces like the Handsfree page, where the
+   * text tools report that no composer is focused rather than faking one.
+   */
+  composer?: ComposerBinding;
   openNewThread: (projectId: string | null) => void;
 }
 
@@ -162,6 +167,16 @@ export class VoiceAgent {
 
   bind(bindings: Bindings) {
     this.bindings = bindings;
+  }
+
+  /**
+   * Bind a surface only if nothing is bound yet. The Handsfree page uses this so
+   * a call can be started with no composer mounted (its FAB), without clobbering
+   * the richer binding a real composer installs — a live composer's text tools
+   * must keep targeting that composer, not the page's new-thread fallback.
+   */
+  bindFallback(bindings: Bindings) {
+    if (!this.bindings) this.bindings = bindings;
   }
 
   private setState(next: VoiceState) {
@@ -436,12 +451,20 @@ export class VoiceAgent {
     if (!bindings) {
       output = "Tool error: no bb surface is bound right now.";
     } else if (name === "set_composer_text") {
-      bindings.composer.setText(String(args.text ?? ""));
-      output = "Composer text replaced.";
+      if (!bindings.composer) {
+        output = "No composer is focused right now — open or start a thread to draft a message.";
+      } else {
+        bindings.composer.setText(String(args.text ?? ""));
+        output = "Composer text replaced.";
+      }
     } else if (name === "append_composer_text") {
-      const text = String(args.text ?? "");
-      bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
-      output = "Text appended to composer.";
+      if (!bindings.composer) {
+        output = "No composer is focused right now — open or start a thread to draft a message.";
+      } else {
+        const text = String(args.text ?? "");
+        bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
+        output = "Text appended to composer.";
+      }
     } else if (
       name === "start_thread" &&
       !(typeof args.prompt === "string" && args.prompt.trim())

@@ -5,7 +5,12 @@
 // starts/controls the call right here, so you never route through the composer
 // (which collapses on mobile) or switch sidebars to talk.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import {
+  experimental_useSidebarThreadActions,
+  useBbContext,
+  useRealtime,
+  useRpc,
+} from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
@@ -83,15 +88,17 @@ function TranscriptIcon() {
 }
 
 /**
- * The call console — a bottom-center floating control that owns the entire call
+ * The call console — a bottom-center control that owns the entire call
  * lifecycle right on the Handsfree page. Idle: a "Talk to Aide" pill. Live: it
  * expands into a console (mute · who-has-the-floor + duration · jump to the live
  * transcript · stop). Same neutral-chrome + activity-color language as the
  * composer pill; color marks who's speaking, everything else stays neutral.
- * Positioned bottom-center so it's thumb-reachable on mobile and never depends
- * on the composer being open.
+ *
+ * Rendered as a real element in a footer bar (not `position: fixed`) so it
+ * reserves its own space — nothing overlaps — and stays inside the plugin's own
+ * pointer/stacking context, which is what makes it reliably tappable on mobile.
  */
-function CallFab({ onViewTranscript }: { onViewTranscript: (sessionId: string) => void }) {
+function CallConsole({ onViewTranscript }: { onViewTranscript: (sessionId: string) => void }) {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
   const elapsed = useCallElapsed();
@@ -102,21 +109,19 @@ function CallFab({ onViewTranscript }: { onViewTranscript: (sessionId: string) =
 
   if (!active) {
     return (
-      <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
-        <button
-          type="button"
-          aria-label="Start Aide voice agent"
-          title="Talk to Aide"
-          onClick={() => voiceAgent.toggle()}
-          className={cn(
-            "pointer-events-auto flex h-11 items-center gap-2 rounded-full border border-border bg-card px-5 text-sm font-medium text-foreground shadow-lg transition-colors hover:bg-accent",
-            connecting && "animate-pulse",
-          )}
-        >
-          <WaveformIcon live={false} />
-          {connecting ? "Connecting…" : "Talk to Aide"}
-        </button>
-      </div>
+      <button
+        type="button"
+        aria-label="Start Aide voice agent"
+        title="Talk to Aide"
+        onClick={() => voiceAgent.toggle()}
+        className={cn(
+          "flex h-11 items-center gap-2 rounded-full border border-border bg-card px-5 text-sm font-medium text-foreground shadow-lg transition-colors hover:bg-accent",
+          connecting && "animate-pulse",
+        )}
+      >
+        <WaveformIcon live={false} />
+        {connecting ? "Connecting…" : "Talk to Aide"}
+      </button>
     );
   }
 
@@ -137,9 +142,8 @@ function CallFab({ onViewTranscript }: { onViewTranscript: (sessionId: string) =
   const liveId = voiceAgent.getSessionId();
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
-      <div className="pointer-events-auto flex h-11 max-w-full items-center overflow-hidden rounded-full border border-border bg-card shadow-lg">
-        <button
+    <div className="flex h-11 max-w-full items-center overflow-hidden rounded-full border border-border bg-card shadow-lg">
+      <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
           title={muted ? "Unmute" : "Mute"}
@@ -187,7 +191,6 @@ function CallFab({ onViewTranscript }: { onViewTranscript: (sessionId: string) =
           <StopIcon />
         </button>
       </div>
-    </div>
   );
 }
 
@@ -294,7 +297,29 @@ function useEscapeToClose() {
 
 export function SessionsPanel() {
   const rpc = useRpc<typeof rpcContract>();
+  const { threadId, projectId } = useBbContext();
+  const sidebarActions = experimental_useSidebarThreadActions();
   useEscapeToClose();
+
+  // The Handsfree page has no composer, so nothing else binds the voice agent
+  // here. Install a fallback binding so the FAB can actually start a call from a
+  // cold page — but only when nothing richer is already bound (a live composer's
+  // binding, which its text tools target, must win). We deliberately bind no
+  // composer: with nothing to type into, the text tools report that honestly
+  // (see handleToolCall) rather than silently opening a thread behind the user's
+  // back. Everything else (thread focus, starting work, diffs) runs through rpc,
+  // which works from anywhere.
+  useEffect(() => {
+    voiceAgent.bindFallback({
+      rpc,
+      context: { threadId: threadId ?? null, projectId: projectId ?? null, onNewThreadScreen: false },
+      openNewThread: (targetProjectId) =>
+        sidebarActions.openNewThread({
+          ...(targetProjectId ? { projectId: targetProjectId } : {}),
+          focusPrompt: true,
+        }),
+    });
+  }, [rpc, threadId, projectId, sidebarActions]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -393,7 +418,8 @@ export function SessionsPanel() {
   const current = sessions?.find((session) => session.id === selected) ?? null;
 
   return (
-    <div ref={scrollRef} className="h-full overflow-y-auto p-4 pb-24 md:p-5 md:pb-24">
+    <div className="flex h-full flex-col">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-5">
       <div className="mx-auto w-full max-w-3xl space-y-4">
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
         {selected ? (
@@ -482,7 +508,12 @@ export function SessionsPanel() {
           </>
         )}
       </div>
-      <CallFab onViewTranscript={(sessionId) => setSelected(sessionId)} />
+      </div>
+      <div className="shrink-0 border-t border-border/60 bg-background/90 px-4 py-3 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-3xl justify-center">
+          <CallConsole onViewTranscript={(sessionId) => setSelected(sessionId)} />
+        </div>
+      </div>
     </div>
   );
 }
