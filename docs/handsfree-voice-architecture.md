@@ -44,7 +44,7 @@ Surfaces are separate realms even on one device (observed: distinct realmIds per
 client), so a plain module singleton is **not** shared across them — each surface
 gets its own instance.
 
-## Cross-surface state (HF-1)
+## Cross-surface state
 
 The only channel across realms is bb's realtime bus. The plugin **backend** can
 `bb.realtime.publish(channel, payload)` to every connected client; a surface can
@@ -76,7 +76,7 @@ Voice input is always the **owner client's microphone**. Another client can mirr
 and control the call but cannot become its microphone; to talk from a different
 device you start a new call there (exclusivity ends the old one).
 
-## The mobile constraint (HF-2)
+## The mobile constraint
 
 When the owner realm is backgrounded on iOS (e.g. the app navigates away), the OS:
 
@@ -85,14 +85,14 @@ When the owner realm is backgrounded on iOS (e.g. the app navigates away), the O
 - **freezes inbound messages** — the realm stops receiving relayed commands,
 - **still fires timers occasionally** — so it keeps emitting presence heartbeats.
 
-Before HF-2 this produced a one-way zombie: you hear Aide, Aide can't hear you,
+Left unhandled, this is a one-way zombie: you hear Aide, Aide can't hear you,
 every surface shows "live", and no stop reaches the frozen owner.
 
 A webview cannot hold the microphone in the background — only a native app with
 background-audio entitlements can, and we run inside bb's webviews. So a
-backgrounded call cannot survive on mobile. HF-2 therefore does not try to keep it
-alive; it **prevents** the backgrounding where it can and **ends cleanly** (and
-recoverably) where it can't.
+backgrounded call cannot survive on mobile. The plugin therefore does not try to
+keep it alive; it **prevents** the backgrounding where it can and **ends cleanly**
+(and recoverably) where it can't.
 
 Desktop (Electron) does not suspend the mic on in-app navigation — audio may pause
 while the panel is hidden, but the mic isn't suspended and the call resumes — so
@@ -108,8 +108,8 @@ things follow from it:
 - `threads.open` **delivers to every connected window**, not just the caller — so
   navigating from the phone also moves the desktop.
 
-HF-2 handles these per tool (see scenarios). Per-client navigation targeting is a
-bb-native gap (HF-4).
+The plugin handles these per tool (see scenarios). Per-client navigation
+targeting is a bb-native gap (see Known limitations).
 
 ## Observability
 
@@ -120,7 +120,7 @@ event is then attributable to a device and surface — which is how the mobile b
 were diagnosed. Suspensions log `mic.suspend.teardown {cause}` naming the tool
 that triggered them, so a mis-classified navigating tool self-reports.
 
-## Known bb-native limits (HF-4)
+## Known limitations
 
 - **No shared/background realm** for plugins — the call is trapped in a
   backgroundable surface. A shared context would remove the need for nav-gating.

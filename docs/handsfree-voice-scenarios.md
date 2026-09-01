@@ -34,10 +34,9 @@ You ask Aide to open a thread. It doesn't navigate; it says "tap Live threads,
 then select …".
 
 - **Ideal:** the call stays alive; you're told where to tap.
-- **Under the hood:** `focus_thread` is in the mobile nav block-list (measured to
-  background the owner). During a live mobile call it's refused with guidance
-  instead of run. Verified: a multi-minute call survived two blocked focus
-  requests.
+- **Under the hood:** `focus_thread` is in the mobile nav block-list (it
+  backgrounds the owner realm). During a live mobile call it's refused with
+  guidance instead of run, so the call keeps running.
 
 ## 4. Agent starts a new thread — `start_thread` *(mobile)*
 
@@ -55,8 +54,8 @@ nothing navigates. Aide says "started — tap it in your list to view."
 Runs normally.
 
 - **Ideal:** no effect on the call.
-- **Under the hood:** measured safe (three consecutive calls, no backgrounding) —
-  pane actions don't replace the full-screen surface on mobile. Not gated.
+- **Under the hood:** pane actions don't replace the full-screen surface on
+  mobile, so they don't background the owner. Not gated.
 
 ## 6. You background the app mid-call *(mobile)*
 
@@ -77,14 +76,15 @@ it.
 - **Under the hood:** `forceStop` is server-side and doesn't need the owner to act.
   Any surface's stop clears presence everywhere and marks the session stopped.
 
-## 8. Starting a thread from the phone moves the desktop (known)
+## 8. Navigation targets all windows (known limitation)
 
-Before scenario 4's fix, starting a thread from the phone also navigated the idle
-desktop.
+`threads.open` delivers to every connected window, so a thread brought on screen
+appears on all of them — focusing from the phone also moves the desktop.
 
-- **Now:** fixed for `start_thread` via suppressed focus.
-- **Open:** `threads.open` delivers to all connected windows; per-client targeting
-  is a bb-native gap tracked in HF-4.
+- **Handled:** `start_thread` avoids this on a mobile call by suppressing focus
+  (scenario 4), so it doesn't move other windows.
+- **Open:** a general fix — targeting navigation at one specific client — is a
+  bb-native gap.
 
 ## How a mis-classified navigating tool self-reports
 
