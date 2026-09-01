@@ -1,11 +1,14 @@
 // Aide sessions page: inspect voice sessions inside bb — the bb-native
 // version of CodeAide's HTML session log. Lists sessions with cost, and shows
 // a live-updating transcript: what you said, what Aide said, every tool call
-// with arguments and result, and errors.
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+// with arguments and result, and errors. A bottom-center call console (the FAB)
+// starts/controls the call right here, so you never route through the composer
+// (which collapses on mobile) or switch sidebars to talk.
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
+import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
 import { cn } from "@/lib/utils";
 
 interface SessionRow {
@@ -70,41 +73,121 @@ function GearIcon() {
   );
 }
 
-/** Live session controls: state, mute/unmute, stop — right on the page. */
-function SessionControls() {
-  const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
-  if (state === "idle") {
-    return <span className="text-xs text-muted-foreground">No active session</span>;
-  }
-  const muted = state === "muted";
+/** Stacked lines — the jump-to-transcript affordance on the live console. */
+function TranscriptIcon() {
   return (
-    <span className="flex items-center gap-2">
-      <span className={cn("flex items-center gap-1.5 text-xs", muted ? "text-destructive" : "text-primary")}>
-        <span className={cn("size-2 rounded-full", muted ? "bg-destructive/70" : "animate-pulse bg-primary")} />
-        {state}
-      </span>
-      {state !== "connecting" ? (
+    <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
+      <path d="M3 4h10M3 8h10M3 12h6" />
+    </svg>
+  );
+}
+
+/**
+ * The call console — a bottom-center floating control that owns the entire call
+ * lifecycle right on the Handsfree page. Idle: a "Talk to Aide" pill. Live: it
+ * expands into a console (mute · who-has-the-floor + duration · jump to the live
+ * transcript · stop). Same neutral-chrome + activity-color language as the
+ * composer pill; color marks who's speaking, everything else stays neutral.
+ * Positioned bottom-center so it's thumb-reachable on mobile and never depends
+ * on the composer being open.
+ */
+function CallFab({ onViewTranscript }: { onViewTranscript: (sessionId: string) => void }) {
+  const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
+  const elapsed = useCallElapsed();
+  const live = state === "live";
+  const muted = state === "muted";
+  const active = live || muted;
+  const connecting = state === "connecting";
+
+  if (!active) {
+    return (
+      <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
         <button
           type="button"
-          onClick={() => voiceAgent.toggleMute()}
+          aria-label="Start Aide voice agent"
+          title="Talk to Aide"
+          onClick={() => voiceAgent.toggle()}
           className={cn(
-            "rounded-md border px-2 py-0.5 text-xs",
-            muted
-              ? "border-destructive text-destructive"
-              : "border-border text-muted-foreground hover:text-foreground",
+            "pointer-events-auto flex h-11 items-center gap-2 rounded-full border border-border bg-card px-5 text-sm font-medium text-foreground shadow-lg transition-colors hover:bg-accent",
+            connecting && "animate-pulse",
           )}
         >
-          {muted ? "Unmute" : "Mute"}
+          <WaveformIcon live={false} />
+          {connecting ? "Connecting…" : "Talk to Aide"}
         </button>
-      ) : null}
-      <button
-        type="button"
-        onClick={() => voiceAgent.stop()}
-        className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
-      >
-        Stop
-      </button>
-    </span>
+      </div>
+    );
+  }
+
+  const speaking = activity === "aide";
+  const listening = activity === "you";
+  const activityColor = speaking
+    ? "text-[color:var(--success,#6faf76)]" // Aide
+    : listening
+      ? "text-foreground" // you
+      : "text-muted-foreground/70";
+  const label = speaking
+    ? "Aide speaking…"
+    : listening
+      ? "Listening…"
+      : muted
+        ? "Muted"
+        : "Connected";
+  const liveId = voiceAgent.getSessionId();
+
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
+      <div className="pointer-events-auto flex h-11 max-w-full items-center overflow-hidden rounded-full border border-border bg-card shadow-lg">
+        <button
+          type="button"
+          aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
+          title={muted ? "Unmute" : "Mute"}
+          onClick={() => voiceAgent.toggleMute()}
+          className={cn(
+            "flex size-11 shrink-0 items-center justify-center transition-colors",
+            muted
+              ? "text-destructive hover:bg-destructive/15"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+        >
+          <MicIcon slashed={muted} />
+        </button>
+        <span className="h-5 w-px bg-border" />
+        <span className="flex min-w-0 items-center gap-2 px-3">
+          <span className={cn("flex shrink-0 items-center", activityColor)} title={label} aria-label={label}>
+            <WaveformIcon live={speaking || listening} />
+          </span>
+          <span className="truncate text-sm text-foreground">{label}</span>
+          <span className="shrink-0 tabular-nums text-xs text-muted-foreground">{elapsed ?? ""}</span>
+        </span>
+        {liveId ? (
+          <>
+            <span className="h-5 w-px bg-border" />
+            <button
+              type="button"
+              onClick={() => onViewTranscript(liveId)}
+              title="View live transcript"
+              aria-label="View live transcript"
+              className="flex h-11 shrink-0 items-center gap-1.5 px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <TranscriptIcon />
+              <span className="hidden sm:inline">Transcript</span>
+            </button>
+          </>
+        ) : null}
+        <span className="h-5 w-px bg-border" />
+        <button
+          type="button"
+          aria-label="Stop Aide voice session"
+          title="Stop"
+          onClick={() => voiceAgent.stop()}
+          className="flex size-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+        >
+          <StopIcon />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -213,19 +296,59 @@ export function SessionsPanel() {
   const rpc = useRpc<typeof rpcContract>();
   useEscapeToClose();
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Set when the transcript is opened so the first batch of events snaps to the
+  // bottom (latest), even if the list is taller than the viewport.
+  const pendingBottom = useRef(false);
 
-  const refetchSessions = useCallback(() => {
-    rpc.call("listSessions", null).then(
+  // Refresh the newest page and fold it over what's loaded: update rows in place
+  // (counts/cost/ended change as a call runs) and prepend brand-new sessions,
+  // without dropping older pages the user already fetched via "Load more".
+  const mergeNewest = useCallback((rows: SessionRow[], more: boolean) => {
+    setSessions((prev) => {
+      if (!prev) {
+        setHasMore(more);
+        return rows;
+      }
+      const incoming = new Map(rows.map((row) => [row.id, row]));
+      const updated = prev.map((session) => incoming.get(session.id) ?? session);
+      const existing = new Set(prev.map((session) => session.id));
+      const fresh = rows.filter((row) => !existing.has(row.id));
+      return fresh.length ? [...fresh, ...updated] : updated;
+    });
+  }, []);
+
+  const refreshNewest = useCallback(() => {
+    rpc.call("listSessions", { offset: 0 }).then(
       (result) => {
-        setSessions(result.sessions);
+        mergeNewest(result.sessions, result.hasMore);
         setError(null);
       },
       (cause) => setError(cause instanceof Error ? cause.message : String(cause)),
     );
-  }, [rpc]);
+  }, [rpc, mergeNewest]);
+
+  const loadMore = useCallback(() => {
+    if (!sessions) return;
+    setLoadingMore(true);
+    rpc.call("listSessions", { offset: sessions.length }).then(
+      (result) => {
+        setSessions((prev) => {
+          if (!prev) return result.sessions;
+          const existing = new Set(prev.map((session) => session.id));
+          return [...prev, ...result.sessions.filter((row) => !existing.has(row.id))];
+        });
+        setHasMore(result.hasMore);
+        setLoadingMore(false);
+      },
+      () => setLoadingMore(false),
+    );
+  }, [rpc, sessions]);
 
   const refetchEvents = useCallback(
     (sessionId: string) => {
@@ -237,25 +360,43 @@ export function SessionsPanel() {
     [rpc],
   );
 
-  useEffect(refetchSessions, [refetchSessions]);
   useEffect(() => {
-    if (selected) refetchEvents(selected);
+    refreshNewest();
+  }, [refreshNewest]);
+  useEffect(() => {
+    if (selected) {
+      pendingBottom.current = true;
+      refetchEvents(selected);
+    }
   }, [selected, refetchEvents]);
 
   // Live updates: the server publishes on every logged event.
   useRealtime("aide-log", (payload) => {
-    refetchSessions();
+    refreshNewest();
     const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId;
     if (selected && sessionId === selected) refetchEvents(selected);
   });
 
+  // Auto-follow the transcript: after opening it, or when new events land while
+  // you're already reading the bottom, snap to the latest — but if you've
+  // scrolled up to read history, stay put.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!selected || !el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    if (pendingBottom.current || nearBottom) {
+      el.scrollTop = el.scrollHeight;
+      pendingBottom.current = false;
+    }
+  }, [events, selected]);
+
   const current = sessions?.find((session) => session.id === selected) ?? null;
 
   return (
-    <div className="h-full overflow-y-auto p-4 md:p-5">
+    <div ref={scrollRef} className="h-full overflow-y-auto p-4 pb-24 md:p-5 md:pb-24">
       <div className="mx-auto w-full max-w-3xl space-y-4">
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
-        {current ? (
+        {selected ? (
           <>
             <div className="flex items-center gap-3">
               <button
@@ -265,11 +406,13 @@ export function SessionsPanel() {
               >
                 ← All sessions
               </button>
-              <span className="text-sm text-foreground">
-                {fmtDate(current.startedAt)} · {duration(current.startedAt, current.lastEventAt)} ·{" "}
-                {current.ended ? "ended" : "live"} ·{" "}
-                {current.costUsd > 0 ? `~$${current.costUsd.toFixed(4)}` : "no usage recorded"}
-              </span>
+              {current ? (
+                <span className="text-sm text-foreground">
+                  {fmtDate(current.startedAt)} · {duration(current.startedAt, current.lastEventAt)} ·{" "}
+                  {current.ended ? "ended" : "live"} ·{" "}
+                  {current.costUsd > 0 ? `~$${current.costUsd.toFixed(4)}` : "no usage recorded"}
+                </span>
+              ) : null}
             </div>
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card px-3 py-1">
               {events.length === 0 ? (
@@ -283,26 +426,23 @@ export function SessionsPanel() {
           <>
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">Aide Voice Session Transcripts</p>
-              <span className="flex items-center gap-4">
-                <SessionControls />
-                <button
-                  type="button"
-                  onClick={openHandsfreeSettings}
-                  title="Open Handsfree settings"
-                  aria-label="Open Handsfree settings"
-                  className="flex items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <GearIcon />
-                  Settings
-                </button>
-              </span>
+              <button
+                type="button"
+                onClick={openHandsfreeSettings}
+                title="Open Handsfree settings"
+                aria-label="Open Handsfree settings"
+                className="flex items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <GearIcon />
+                Settings
+              </button>
             </div>
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
               {sessions === null ? (
                 <p className="p-3 text-sm text-muted-foreground">Loading…</p>
               ) : sessions.length === 0 ? (
                 <p className="p-3 text-sm text-muted-foreground">
-                  No sessions yet. Click the waveform button in any composer and start talking.
+                  No sessions yet. Tap “Talk to Aide” below to start your first one.
                 </p>
               ) : (
                 sessions.map((session) => (
@@ -327,9 +467,22 @@ export function SessionsPanel() {
                 ))
               )}
             </div>
+            {hasMore ? (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+                >
+                  {loadingMore ? "Loading…" : "Load more"}
+                </button>
+              </div>
+            ) : null}
           </>
         )}
       </div>
+      <CallFab onViewTranscript={(sessionId) => setSelected(sessionId)} />
     </div>
   );
 }

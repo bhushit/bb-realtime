@@ -121,6 +121,13 @@ export class VoiceAgent {
   readonly getLiveStartedAt = (): number | null => this.liveStartedAt;
 
   /**
+   * The active session id (the call nonce, which doubles as the session id used
+   * when logging events), or null when idle. Lets the page jump straight to the
+   * live session's transcript.
+   */
+  readonly getSessionId = (): string | null => this.nonce;
+
+  /**
    * Who is talking right now, from the data-channel signals we already track
    * (VAD for the user, response lifecycle for Aide). Deliberately no audio
    * analysis — it stays reliable and never touches the audio pipeline. The

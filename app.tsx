@@ -5,7 +5,7 @@
 // and audio playback happen right here in the bb app); the backend performs
 // the SDP exchange (it holds the API key) and executes bb tools via bb.sdk.
 // The session itself lives in voice-agent.ts and outlives any component.
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import {
   definePluginApp,
   experimental_useSidebarThreadActions,
@@ -22,44 +22,8 @@ import { SessionsPanel } from "./sessions-panel";
 import { AudioSettings, BehaviorSettings, ModelsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
+import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
 import "./app.css";
-
-
-function WaveformIcon({ live }: { live: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      className={cn("size-4", live && "aide-wave-live")}
-      fill="currentColor"
-      aria-hidden
-    >
-      <rect className="aide-bar" x="1.5" y="6" width="1.8" height="4" rx="0.9" />
-      <rect className="aide-bar" x="4.9" y="3.5" width="1.8" height="9" rx="0.9" />
-      <rect className="aide-bar" x="8.3" y="1.5" width="1.8" height="13" rx="0.9" />
-      <rect className="aide-bar" x="11.7" y="4.5" width="1.8" height="7" rx="0.9" />
-    </svg>
-  );
-}
-
-function MicIcon({ slashed }: { slashed: boolean }) {
-  return (
-    <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
-      <rect x="6" y="1.8" width="4" height="7" rx="2" fill="currentColor" stroke="none" />
-      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" />
-      <path d="M8 12v2.2" />
-      {slashed ? <path d="M2.5 2.5l11 11" strokeWidth="1.6" /> : null}
-    </svg>
-  );
-}
-
-/** A rounded stop square — ends the voice session. */
-function StopIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-3.5" fill="currentColor" aria-hidden>
-      <rect x="4" y="4" width="8" height="8" rx="1.6" />
-    </svg>
-  );
-}
 
 function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
@@ -291,26 +255,6 @@ function ThreadListWithVoiceBar({ Original }: PluginThreadListProps) {
       </div>
     </div>
   );
-}
-
-function formatElapsed(ms: number): string {
-  const total = Math.floor(Math.max(0, ms) / 1000);
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-/** Live call duration as m:ss, ticking each second; null when no live call. */
-function useCallElapsed(): string | null {
-  const startedAt = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getLiveStartedAt);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (startedAt == null) return;
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [startedAt]);
-  return startedAt == null ? null : formatElapsed(now - startedAt);
 }
 
 /** Trailing accessory on the Aide sidebar row: a live indicator with duration. */

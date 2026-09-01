@@ -177,7 +177,7 @@ export const rpcContract = defineRpcContract({
   },
   /** List voice sessions, newest first, with counts and estimated cost. */
   listSessions: {
-    input: z.null(),
+    input: z.object({ offset: z.number().int().min(0) }).strict().nullable(),
     output: z
       .object({
         sessions: z.array(
@@ -192,6 +192,7 @@ export const rpcContract = defineRpcContract({
             })
             .strict(),
         ),
+        hasMore: z.boolean(),
       })
       .strict(),
   },
@@ -1146,17 +1147,24 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("aide-log", { sessionId });
       return { ok: true as const };
     },
-    async listSessions() {
+    async listSessions(input) {
+      // Page through grouped sessions newest-first. Fetch one extra row past the
+      // page to tell the client whether a "Load more" is worthwhile, then drop it.
+      const pageSize = 30;
+      const offset = input?.offset ?? 0;
       const rows = db
         .prepare(
           `SELECT session_id AS id, MIN(ts) AS startedAt, MAX(ts) AS lastEventAt, COUNT(*) AS events,
                   SUM(CASE WHEN kind = 'session.stopped' THEN 1 ELSE 0 END) AS stopped
-           FROM session_events GROUP BY session_id ORDER BY startedAt DESC LIMIT 100`,
+           FROM session_events GROUP BY session_id ORDER BY startedAt DESC LIMIT ? OFFSET ?`,
         )
-        .all() as { id: string; startedAt: number; lastEventAt: number; events: number; stopped: number }[];
+        .all(pageSize + 1, offset) as { id: string; startedAt: number; lastEventAt: number; events: number; stopped: number }[];
+      const hasMore = rows.length > pageSize;
+      const page = hasMore ? rows.slice(0, pageSize) : rows;
       const costStmt = db.prepare("SELECT * FROM usage_events WHERE session_id = ?");
       return {
-        sessions: rows.map((row) => ({
+        hasMore,
+        sessions: page.map((row) => ({
           id: row.id,
           startedAt: row.startedAt,
           lastEventAt: row.lastEventAt,
