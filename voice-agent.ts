@@ -38,6 +38,17 @@ interface RemotePresence {
   ownerRealm?: string;
 }
 
+/**
+ * Tools measured to background the owner realm on mobile (→ iOS suspends the mic
+ * → the call dies), so they're refused during a live mobile call. Verified on
+ * 2026-09-01: `focus_thread` backgrounds the app; `set_pane` and `start_thread`
+ * do NOT. This is the correctness-optimization list; if a new/other tool ever
+ * backgrounds us anyway, `mic.suspend.teardown {cause}` names it in the logs and
+ * the call still ends cleanly — so this list can stay small and be extended from
+ * evidence, not guesswork.
+ */
+const MOBILE_NAV_TOOLS = new Set(["focus_thread"]);
+
 /** A mirror is stale (owner realm likely gone) after two missed heartbeats. */
 const PRESENCE_STALE_MS = 25_000;
 /** How often the owning realm re-announces a live call, for the mirror above. */
@@ -181,6 +192,8 @@ export class VoiceAgent {
   private remoteExpiryTimer: ReturnType<typeof setInterval> | null = null;
   /** Guards the once-per-realm `client.hello` observability record. */
   private helloed = false;
+  /** The most recent tool call, so a suspend/teardown can name its likely cause. */
+  private lastTool: { name: string; at: number } | null = null;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -661,12 +674,16 @@ export class VoiceAgent {
     track.onmute = () => {
       if (this.session !== session) return;
       const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-      this.logDiag("mic.track.muted", { hidden });
+      // Name the tool that ran just before this, so a suspension caused by a
+      // navigation tool we haven't classified yet is self-reporting in the logs.
+      const cause =
+        this.lastTool && Date.now() - this.lastTool.at < 4000 ? this.lastTool.name : null;
+      this.logDiag("mic.track.muted", { hidden, cause });
       if (hidden) {
         // Backgrounded on mobile: the mic is gone and this realm is about to
         // freeze. End cleanly NOW (while the handler still runs) and enforce it
         // server-side, so it never becomes an unstoppable zombie.
-        this.logDiag("mic.suspend.teardown", {});
+        this.logDiag("mic.suspend.teardown", { cause });
         this.endBecauseSuspended();
       } else {
         // Mic muted while visible (another app grabbed it, glitch): try to heal.
@@ -886,6 +903,7 @@ export class VoiceAgent {
       /* keep {} */
     }
     this.log("tool.call", { name, args });
+    this.lastTool = { name, at: Date.now() };
     let output: string;
     if (!bindings) {
       output = "Tool error: no bb surface is bound right now.";
@@ -918,13 +936,13 @@ export class VoiceAgent {
       output =
         "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
     } else if (
-      (name === "focus_thread" || name === "set_pane") &&
+      MOBILE_NAV_TOOLS.has(name) &&
       clientDescriptor.mobile &&
       (this.state === "live" || this.state === "muted")
     ) {
-      // On mobile, navigating the app backgrounds the realm that owns this call
-      // and iOS suspends the mic — the call dies. So don't navigate during a live
-      // mobile call; have the model point the user to the tap target instead.
+      // On mobile, this tool backgrounds the realm that owns the call and iOS
+      // suspends the mic — the call dies. So don't run it during a live mobile
+      // call; have the model point the user to the tap target instead.
       this.logDiag("nav.blocked", { name });
       output =
         "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. Instead, tell the user in one short sentence exactly what to tap to get there themselves.";
