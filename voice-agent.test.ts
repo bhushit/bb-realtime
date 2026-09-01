@@ -19,14 +19,14 @@ test("reloads audio preferences saved by another browser window", () => {
     const agent = new VoiceAgent();
     writeAudioDevicePreferences(storage, {
       inputDeviceId: "mic-from-window-a",
-      outputDeviceId: "speaker-from-window-a",
+      inputLabel: "Window A Mic",
     });
 
     agent.refreshAudioPreferences();
 
     assert.deepEqual(agent.getAudioPreferences(), {
       inputDeviceId: "mic-from-window-a",
-      outputDeviceId: "speaker-from-window-a",
+      inputLabel: "Window A Mic",
     });
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
@@ -34,7 +34,7 @@ test("reloads audio preferences saved by another browser window", () => {
   }
 });
 
-test("stopping during speaker routing closes the mic and cancels startup", async () => {
+test("stopping during the SDP exchange closes the mic and cancels startup", async () => {
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   const originalPeerConnection = Object.getOwnPropertyDescriptor(globalThis, "RTCPeerConnection");
   const originalAudio = Object.getOwnPropertyDescriptor(globalThis, "Audio");
@@ -49,13 +49,13 @@ test("stopping during speaker routing closes the mic and cancels startup", async
     getTracks: () => [track],
     getAudioTracks: () => [track],
   } as unknown as MediaStream;
-  let resolveSink!: () => void;
-  let announceSinkStarted!: () => void;
-  const sinkStarted = new Promise<void>((resolve) => {
-    announceSinkStarted = resolve;
+  let resolveCall!: () => void;
+  let announceCallStarted!: () => void;
+  const callStarted = new Promise<void>((resolve) => {
+    announceCallStarted = resolve;
   });
-  const sinkPending = new Promise<void>((resolve) => {
-    resolveSink = resolve;
+  const callPending = new Promise<void>((resolve) => {
+    resolveCall = resolve;
   });
   let peer: FakePeerConnection | null = null;
 
@@ -64,9 +64,10 @@ test("stopping during speaker routing closes the mic and cancels startup", async
     connectionState = "new";
     localDescription: RTCSessionDescriptionInit | null = null;
     closed = false;
-    createOfferCalls = 0;
+    setRemoteCalls = 0;
     ontrack: ((event: RTCTrackEvent) => void) | null = null;
     onconnectionstatechange: (() => void) | null = null;
+    oniceconnectionstatechange: (() => void) | null = null;
 
     constructor() {
       peer = this;
@@ -79,32 +80,36 @@ test("stopping during speaker routing closes the mic and cancels startup", async
       this.closed = true;
     }
     createDataChannel() {
-      return { readyState: "connecting", close() {}, send() {}, onopen: null, onmessage: null };
+      return { readyState: "connecting", close() {}, send() {}, onopen: null, onclose: null, onmessage: null };
     }
     async createOffer() {
-      this.createOfferCalls += 1;
       return { type: "offer" as const, sdp: "offer" };
     }
     async setLocalDescription(description: RTCSessionDescriptionInit) {
       this.localDescription = description;
     }
-    async setRemoteDescription() {}
+    async setRemoteDescription() {
+      this.setRemoteCalls += 1;
+    }
   }
 
   class FakeAudio {
     autoplay = false;
     srcObject: MediaStream | null = null;
-    async setSinkId() {
-      announceSinkStarted();
-      return sinkPending;
-    }
     async play() {}
     remove() {}
   }
 
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
-    value: { mediaDevices: { getUserMedia: async () => stream } },
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => stream,
+        enumerateDevices: async () => [
+          { deviceId: "mic-1", kind: "audioinput", label: "Built-in Mic" },
+        ],
+      },
+    },
   });
   Object.defineProperty(globalThis, "RTCPeerConnection", {
     configurable: true,
@@ -118,29 +123,37 @@ test("stopping during speaker routing closes the mic and cancels startup", async
   const agent = new VoiceAgent();
   agent.bind({
     rpc: {
-      call: (async (method: string) =>
-        method === "createCall" ? { sdp: "answer" } : { ok: true }) as never,
+      // Pause startup at the SDP exchange so the test can stop mid-flight.
+      call: (async (method: string) => {
+        if (method === "createCall") {
+          announceCallStarted();
+          await callPending;
+          return { sdp: "answer" };
+        }
+        return { ok: true };
+      }) as never,
     },
     context: { threadId: null, projectId: null },
     composer: { setText() {}, updateText() {} },
     openNewThread() {},
   });
-  agent.setAudioPreferences({ inputDeviceId: "", outputDeviceId: "speaker-1" });
+  agent.setAudioPreferences({ inputDeviceId: "", inputLabel: "" });
 
   try {
     agent.toggle();
-    await sinkStarted;
+    await callStarted;
     agent.stop();
 
     assert.equal(track.stopped, true);
     assert.equal(peer?.closed, true);
 
-    resolveSink();
+    resolveCall();
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(peer?.createOfferCalls, 0);
+    // Stopped mid-exchange: the answer must never be applied.
+    assert.equal(peer?.setRemoteCalls, 0);
     assert.equal(agent.getState(), "idle");
   } finally {
-    resolveSink();
+    resolveCall();
     agent.stop();
     if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
     else delete (globalThis as { navigator?: unknown }).navigator;

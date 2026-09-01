@@ -98,8 +98,6 @@ export function AudioDeviceSettings() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [deviceError, setDeviceError] = useState<string | null>(null);
-  const supportsSpeakerSelection =
-    typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 
   const refresh = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -126,10 +124,12 @@ export function AudioDeviceSettings() {
   const inputs = devices.filter(
     (device) => device.kind === "audioinput" && device.deviceId,
   );
-  const outputs = devices.filter(
-    (device) => device.kind === "audiooutput" && device.deviceId,
-  );
   const labelsHidden = inputs.length > 0 && inputs.every((device) => !device.label);
+  // The saved mic can no longer be found (unplugged, or its id rotated with no
+  // matching label). Keep it visible so the user can see and re-pick it.
+  const savedMicMissing =
+    !!preferences.inputDeviceId &&
+    !inputs.some((device) => device.deviceId === preferences.inputDeviceId);
 
   async function allowAccess() {
     try {
@@ -141,34 +141,36 @@ export function AudioDeviceSettings() {
     }
   }
 
-  function change(kind: "input" | "output", deviceId: string) {
-    voiceAgent.setAudioPreferences({
-      ...preferences,
-      [kind === "input" ? "inputDeviceId" : "outputDeviceId"]: deviceId,
-    });
-    toast.success("Audio device saved — applies to the next voice session");
+  function change(deviceId: string) {
+    const label = inputs.find((device) => device.deviceId === deviceId)?.label ?? "";
+    voiceAgent.setAudioPreferences({ inputDeviceId: deviceId, inputLabel: label });
+    toast.success("Microphone saved — applies to the next voice session");
   }
 
   return (
     <details className="rounded-lg border border-border bg-card">
       <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-foreground">
-        Audio devices
+        Microphone
         <span className="ml-2 text-xs font-normal text-muted-foreground">
-          microphone and speaker
+          speaker uses your system default
         </span>
       </summary>
-      <div className="grid gap-3 border-t border-border/50 p-3 sm:grid-cols-2">
-        <label className="space-y-1 text-xs text-muted-foreground">
+      <div className="space-y-3 border-t border-border/50 p-3">
+        <label className="block space-y-1 text-xs text-muted-foreground">
           <span>Microphone</span>
           <select
             value={preferences.inputDeviceId}
             disabled={loading}
-            onChange={(event) => change("input", event.target.value)}
+            onChange={(event) => change(event.target.value)}
             className="block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
           >
             <option value="">System default</option>
-            {preferences.inputDeviceId && !inputs.some((device) => device.deviceId === preferences.inputDeviceId) ? (
-              <option value={preferences.inputDeviceId}>Unavailable device</option>
+            {savedMicMissing ? (
+              <option value={preferences.inputDeviceId}>
+                {preferences.inputLabel
+                  ? `${preferences.inputLabel} (not connected)`
+                  : "Selected microphone (not connected)"}
+              </option>
             ) : null}
             {inputs.map((device, index) => (
               <option key={device.deviceId} value={device.deviceId}>
@@ -177,32 +179,13 @@ export function AudioDeviceSettings() {
             ))}
           </select>
         </label>
-        <label className="space-y-1 text-xs text-muted-foreground">
-          <span>Speaker</span>
-          <select
-            value={supportsSpeakerSelection ? preferences.outputDeviceId : ""}
-            disabled={loading || !supportsSpeakerSelection}
-            onChange={(event) => change("output", event.target.value)}
-            className="block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60"
-          >
-            <option value="">System default</option>
-            {preferences.outputDeviceId && !outputs.some((device) => device.deviceId === preferences.outputDeviceId) ? (
-              <option value={preferences.outputDeviceId}>Unavailable device</option>
-            ) : null}
-            {outputs.map((device, index) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {deviceDisplayLabel(device, index)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="sm:col-span-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
           <span>
-            {!supportsSpeakerSelection
-              ? "This browser only supports the system-default speaker."
-              : labelsHidden
-                ? "Allow microphone access to reveal device names."
-                : "Selections are stored in this browser and apply to new sessions."}
+            {labelsHidden
+              ? "Allow microphone access to reveal device names."
+              : savedMicMissing
+                ? "Your selected mic isn't connected — sessions use the system default until it returns."
+                : "Stored in this browser; applies to new sessions. Speaker always uses the system default."}
           </span>
           <span className="flex shrink-0 items-center gap-2">
             {labelsHidden ? (
@@ -224,7 +207,7 @@ export function AudioDeviceSettings() {
           </span>
         </div>
         {deviceError ? (
-          <p className="sm:col-span-2 text-xs text-destructive">{deviceError}</p>
+          <p className="text-xs text-destructive">{deviceError}</p>
         ) : null}
       </div>
     </details>

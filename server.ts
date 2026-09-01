@@ -949,6 +949,13 @@ export default async function plugin(bb: BbPluginApi) {
       db.prepare(
         "INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)",
       ).run(sessionId, Date.now(), kind, JSON.stringify(payload));
+      // Mirror audio-device diagnostics to the plugin log so `bb plugin logs
+      // handsfree` surfaces mic/speaker problems without opening the DB.
+      if (kind.startsWith("audio.")) {
+        const detail = JSON.stringify(payload);
+        if (kind.endsWith(".failed")) bb.log.error(`${kind} ${detail}`);
+        else bb.log.info(`${kind} ${detail}`);
+      }
       bb.realtime.publish("aide-log", { sessionId });
       return { ok: true as const };
     },

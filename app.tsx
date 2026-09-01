@@ -5,7 +5,7 @@
 // and audio playback happen right here in the bb app); the backend performs
 // the SDP exchange (it holds the API key) and executes bb tools via bb.sdk.
 // The session itself lives in voice-agent.ts and outlives any component.
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   definePluginApp,
   experimental_useSidebarThreadActions,
@@ -15,6 +15,7 @@ import {
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
+import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { AudioDeviceSettings, SessionsPanel } from "./sessions-panel";
@@ -50,6 +51,15 @@ function MicIcon({ slashed }: { slashed: boolean }) {
   );
 }
 
+/** A rounded stop square — ends the voice session. */
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="size-3.5" fill="currentColor" aria-hidden>
+      <rect x="4" y="4" width="8" height="8" rx="1.6" />
+    </svg>
+  );
+}
+
 function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
@@ -64,6 +74,7 @@ function AideVoiceButton() {
   const effectiveProjectId = projectId ?? scopeProjectId;
   const sidebarActions = experimental_useSidebarThreadActions();
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
 
   // Global exclusivity: when any window starts a call, all others stop theirs.
   useRealtime("voice-call", (payload) => {
@@ -106,65 +117,227 @@ function AideVoiceButton() {
 
   const live = state === "live";
   const muted = state === "muted";
-  return (
-    <>
-      {live || muted ? (
+
+  // During a call, one segmented pill with NEUTRAL chrome (border/icons use
+  // theme-neutral tokens so it reads well on any theme regardless of how bold
+  // its primary is). Color appears only on the middle waveform to signal who
+  // has the floor: you (bright foreground) vs Aide (primary). Driven purely by
+  // data-channel activity signals — no audio analysis.
+  if (live || muted) {
+    // Aide can still be talking while your mic is muted, so the middle
+    // indicator tracks conversation activity independent of mute. Mute is shown
+    // by the slashed mic on the left button, not by graying this out.
+    const speaking = activity === "aide";
+    const listening = activity === "you"; // never true while muted (mic is off)
+    const middleLabel = speaking
+      ? "Aide speaking…"
+      : listening
+        ? "Listening…"
+        : muted
+          ? "Muted"
+          : "Connected";
+    return (
+      <div className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
           title={muted ? "Unmute" : "Mute"}
           onClick={() => voiceAgent.toggleMute()}
           className={cn(
-            "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+            "flex size-7 items-center justify-center transition-colors",
             muted
-              ? "border-destructive bg-destructive/15 text-destructive"
-              : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+              ? "text-destructive hover:bg-destructive/20"
+              : "text-muted-foreground hover:bg-background/50 hover:text-foreground",
+          )}
+        >
+          <MicIcon slashed={muted} />
+        </button>
+        <span className="h-4 w-px bg-border" />
+        <span
+          className={cn(
+            "flex h-7 items-center justify-center px-2 transition-colors",
+            // Aide can still be talking while you're muted, so who's-speaking
+            // wins over the muted/quiet dim (mute is shown by the slashed mic).
+            speaking
+              ? "text-[color:var(--success,#6faf76)]" // themed green for Aide
+              : listening
+                ? "text-foreground"
+                : "text-muted-foreground/60",
+          )}
+          title={middleLabel}
+          aria-label={middleLabel}
+        >
+          <WaveformIcon live={speaking || listening} />
+        </span>
+        <span className="h-4 w-px bg-border" />
+        <button
+          type="button"
+          aria-label="Stop Aide voice session"
+          title="Stop"
+          onClick={() => voiceAgent.stop()}
+          className="flex size-7 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+        >
+          <StopIcon />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label="Start Aide voice agent"
+      title="Talk to Aide"
+      onClick={() => voiceAgent.toggle()}
+      className={cn(
+        "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+        state === "connecting"
+          ? "animate-pulse border-primary/50 text-primary"
+          : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      <WaveformIcon live={false} />
+    </button>
+  );
+}
+
+/**
+ * Persistent voice bar pinned to the top of the sidebar thread area (between
+ * the plugin nav rows and the Threads list). State-driven, so every button
+ * reflects the live call — the reason we use `experimental_threadList` rather
+ * than the state-blind footer-action slot.
+ */
+function SidebarVoiceBar() {
+  const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
+  const live = state === "live";
+  const muted = state === "muted";
+  const active = live || muted;
+  const speaking = activity === "aide";
+  const listening = activity === "you";
+  // Same neutral-chrome + activity-color scheme as the composer pill: color
+  // marks who has the floor, everything else stays theme-neutral.
+  const activityColor = speaking
+    ? "text-[color:var(--success,#6faf76)]" // Aide
+    : listening
+      ? "text-foreground" // you
+      : "text-muted-foreground";
+  const label =
+    state === "idle"
+      ? "Talk to Aide"
+      : state === "connecting"
+        ? "Connecting…"
+        : speaking
+          ? "Aide speaking…"
+          : listening
+            ? "Listening…"
+            : muted
+              ? "Muted"
+              : "Live";
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 border-b border-border bg-background px-2 py-1.5">
+      <button
+        type="button"
+        aria-label={active ? "Stop Aide voice agent" : "Start Aide voice agent"}
+        title={active ? "Stop Aide" : "Talk to Aide"}
+        onClick={() => voiceAgent.toggle()}
+        className={cn(
+          "flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium transition-colors",
+          active
+            ? "bg-accent"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          state === "connecting" && "animate-pulse",
+        )}
+      >
+        <span className={cn("flex items-center gap-1.5", active && activityColor)}>
+          <WaveformIcon live={speaking || listening} />
+          {label}
+        </span>
+      </button>
+      {active ? (
+        <button
+          type="button"
+          aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
+          title={muted ? "Unmute" : "Mute"}
+          onClick={() => voiceAgent.toggleMute()}
+          className={cn(
+            "flex size-7 shrink-0 items-center justify-center rounded-md border border-border transition-colors",
+            muted
+              ? "text-destructive hover:bg-destructive/15"
+              : "text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
         >
           <MicIcon slashed={muted} />
         </button>
       ) : null}
-      <button
-        type="button"
-        aria-label={live || muted ? "Stop Aide voice agent" : "Start Aide voice agent"}
-        title={live || muted ? "Stop Aide" : "Talk to Aide"}
-        onClick={() => voiceAgent.toggle()}
-        className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-full border transition-colors",
-          state === "idle" &&
-            "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
-          state === "connecting" && "animate-pulse border-primary/50 text-primary",
-          live && "border-primary bg-primary/15 text-primary",
-          muted && "border-primary/40 bg-primary/5 text-primary/60",
-        )}
-      >
-        <WaveformIcon live={live} />
-      </button>
-    </>
+    </div>
   );
 }
 
-/** Trailing accessory on the Aide sidebar row: shows when a call is on. */
+/**
+ * Sidebar thread list with the voice bar above BB's own list. The bar is a
+ * fixed-height flex child; `Original` gets the remaining height in a scrollable
+ * box (`min-h-0` lets it shrink so the scroll region is bounded, not overlapping
+ * the bar). `overflow-y-auto` — not `hidden` — so a list that scrolls via its
+ * parent still scrolls.
+ */
+function ThreadListWithVoiceBar({ Original }: PluginThreadListProps) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <SidebarVoiceBar />
+      <div className="relative min-h-0 flex-1 overflow-y-auto pb-6">
+        <Original />
+      </div>
+    </div>
+  );
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.floor(Math.max(0, ms) / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** Live call duration as m:ss, ticking each second; null when no live call. */
+function useCallElapsed(): string | null {
+  const startedAt = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getLiveStartedAt);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAt == null) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+  return startedAt == null ? null : formatElapsed(now - startedAt);
+}
+
+/** Trailing accessory on the Aide sidebar row: a live indicator with duration. */
 function SidebarLiveIndicator() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const elapsed = useCallElapsed();
   if (state === "idle") return null;
-  if (state === "muted") {
-    return (
-      <span className="flex items-center gap-1.5 text-xs text-destructive">
-        <span className="size-2 rounded-full bg-destructive/70" />
-        muted
-      </span>
-    );
-  }
+  const muted = state === "muted";
+  const connecting = state === "connecting";
   return (
-    <span className="flex items-center gap-1.5 text-xs text-primary">
+    <span
+      className="flex items-center gap-1.5 text-xs tabular-nums text-muted-foreground"
+      title={muted ? "Muted" : connecting ? "Connecting" : "Live"}
+    >
+      {/* The timer stays one neutral color (it's just call duration, not an
+          error). The dot carries the state: pulsing = connecting (in progress),
+          solid = live (established), solid red = muted. */}
       <span
         className={cn(
-          "size-2 rounded-full bg-primary",
-          state === "live" ? "animate-pulse" : "opacity-50",
+          "size-2 rounded-full",
+          connecting
+            ? "bg-primary animate-pulse"
+            : muted
+              ? "bg-destructive"
+              : "bg-primary",
         )}
       />
-      {state === "live" ? "live" : "\u2026"}
+      {connecting ? "\u2026" : elapsed ?? ""}
     </span>
   );
 }
@@ -188,6 +361,19 @@ export default definePluginApp((app) => {
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
   });
+  // --- Global surface trial: multiple always-reachable triggers for the same
+  // singleton call. All are pure toggles; the composer button owns the binding.
+  // Persistent voice bar above the Threads list. A component slot, so buttons
+  // reflect live call state (unlike the footer-action / command-palette slots).
+  // Optional: a voice bar above the thread list, for anyone who wants an
+  // always-visible control. Off by default is not possible (registering
+  // activates it), but users can pin BB's list under Settings → Appearance.
+  app.slots.experimental_threadList({
+    id: "voice-bar",
+    title: "Handsfree voice bar",
+    description: "Adds a persistent voice control bar above the thread list.",
+    component: ThreadListWithVoiceBar,
+  });
   // The session deliberately outlives any component, so tie it to the plugin
   // frontend generation instead: on reload/disable the old bundle's singleton
   // would otherwise keep a zombie WebRTC call no button controls.
@@ -197,6 +383,10 @@ export default definePluginApp((app) => {
       window.addEventListener("storage", (event) => {
         if (event.key === AUDIO_DEVICE_STORAGE_KEY) voiceAgent.refreshAudioPreferences();
       }, { signal });
+      // Release the mic synchronously before the page tears down. Without this,
+      // a hard reload (Cmd+R) leaves the previous page holding the input device,
+      // so the fresh page enumerates zero microphones until the OS reclaims it.
+      window.addEventListener("pagehide", () => voiceAgent.stop(), { signal });
       signal.addEventListener("abort", () => voiceAgent.stop());
       return () => voiceAgent.stop();
     },
