@@ -67,21 +67,30 @@ skill.
 
 ## Settings
 
-| Setting | Default | |
-|---|---|---|
-| `openaiApiKey` | — | Secret; stored in bb's plugin secret store. Falls back to `OPENAI_API_KEY` in the bb server's environment. |
-| `model` | `gpt-realtime-2` | OpenAI Realtime model |
-| `voice` | `marin` | Assistant voice |
-| `pluginCommands` | `all` | Which installed plugins' `bb` commands the voice agent may run via its `run_plugin_command` tool: `all`, `none`, or comma-separated plugin ids (e.g. `automation,connect`) |
+Open the Handsfree plugin settings for curated sections:
 
-Microphone and speaker choices are available under **Audio devices** in the
-Handsfree plugin settings and on the Handsfree page. They are stored in the
-current browser and apply to the next voice session. If a selected device is
-disconnected, Handsfree falls back to the system default. Speaker selection
-depends on browser support for audio output routing.
+- **Models & voice** — the OpenAI Realtime model, the assistant voice (marin
+  and cedar are the highest-quality options), and a badge showing which
+  credential Aide will use.
+- **Behavior** — whether Aide announces thread events, and which installed
+  plugins' `bb` commands it may run (all / none / a specific list).
+- **Audio** — pick and test the microphone with a live input-level meter. The
+  chosen mic is stored in the current browser and applies to the next voice
+  session; if it disconnects, Handsfree falls back to the system default.
+  Playback always uses your system-default speaker (change it in your OS Sound
+  settings).
 
-Change with `bb plugin config handsfree set <key> <value>`, then
-`bb plugin reload aide`.
+The only credential is the **OpenAI API key**, a secret stored in bb's plugin
+secret store (0600 file, never in the db or frontend). It's optional: leave it
+blank to use your ChatGPT subscription (`codex login`), or set `OPENAI_API_KEY`
+in the bb server's environment. Set it in the settings field, or via the CLI:
+
+```
+bb plugin config handsfree set openaiApiKey <your-openai-key>
+```
+
+Model, voice, and behavior are configured from the settings sections above (no
+longer via `bb plugin config`).
 
 ## Troubleshooting
 

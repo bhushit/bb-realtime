@@ -3,12 +3,11 @@
 // a live-updating transcript: what you said, what Aide said, every tool call
 // with arguments and result, and errors.
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
+import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
-import { DEFAULT_MODEL, MODEL_OPTIONS, type RealtimeModel } from "./models";
 import { voiceAgent } from "./voice-agent";
-import { deviceDisplayLabel } from "./audio-devices";
+import { AudioSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 
 interface SessionRow {
@@ -51,167 +50,6 @@ function parsePayload(raw: string): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-function ModelPicker() {
-  const rpc = useRpc<typeof rpcContract>();
-  const { values, isLoading } = useSettings();
-  const [model, setModel] = useState<RealtimeModel | null>(null);
-  const configured = typeof values?.model === "string" ? values.model : DEFAULT_MODEL;
-  const current = model ?? (MODEL_OPTIONS.includes(configured as RealtimeModel) ? (configured as RealtimeModel) : DEFAULT_MODEL);
-
-  async function change(next: RealtimeModel) {
-    setModel(next);
-    try {
-      await rpc.call("setModel", { model: next });
-      toast.success(`Voice model: ${next} (applies to the next session)`);
-    } catch (cause) {
-      setModel(null);
-      toast.error(`Could not switch model: ${cause instanceof Error ? cause.message : String(cause)}`);
-    }
-  }
-
-  return (
-    <label className="flex items-center gap-2 text-sm text-muted-foreground">
-      Model
-      <select
-        value={current}
-        disabled={isLoading}
-        onChange={(event) => void change(event.target.value as RealtimeModel)}
-        className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground"
-      >
-        {MODEL_OPTIONS.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-export function AudioDeviceSettings() {
-  const preferences = useSyncExternalStore(
-    voiceAgent.subscribe,
-    voiceAgent.getAudioPreferences,
-  );
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [deviceError, setDeviceError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) {
-      setDeviceError("Audio device discovery is not supported in this browser.");
-      setLoading(false);
-      return;
-    }
-    try {
-      setDevices(await navigator.mediaDevices.enumerateDevices());
-      setDeviceError(null);
-    } catch (cause) {
-      setDeviceError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-    navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
-    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
-  }, [refresh]);
-
-  const inputs = devices.filter(
-    (device) => device.kind === "audioinput" && device.deviceId,
-  );
-  const labelsHidden = inputs.length > 0 && inputs.every((device) => !device.label);
-  // The saved mic can no longer be found (unplugged, or its id rotated with no
-  // matching label). Keep it visible so the user can see and re-pick it.
-  const savedMicMissing =
-    !!preferences.inputDeviceId &&
-    !inputs.some((device) => device.deviceId === preferences.inputDeviceId);
-
-  async function allowAccess() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      for (const track of stream.getTracks()) track.stop();
-      await refresh();
-    } catch (cause) {
-      setDeviceError(cause instanceof Error ? cause.message : String(cause));
-    }
-  }
-
-  function change(deviceId: string) {
-    const label = inputs.find((device) => device.deviceId === deviceId)?.label ?? "";
-    voiceAgent.setAudioPreferences({ inputDeviceId: deviceId, inputLabel: label });
-    toast.success("Microphone saved — applies to the next voice session");
-  }
-
-  return (
-    <details className="rounded-lg border border-border bg-card">
-      <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-foreground">
-        Microphone
-        <span className="ml-2 text-xs font-normal text-muted-foreground">
-          speaker uses your system default
-        </span>
-      </summary>
-      <div className="space-y-3 border-t border-border/50 p-3">
-        <label className="block space-y-1 text-xs text-muted-foreground">
-          <span>Microphone</span>
-          <select
-            value={preferences.inputDeviceId}
-            disabled={loading}
-            onChange={(event) => change(event.target.value)}
-            className="block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-          >
-            <option value="">System default</option>
-            {savedMicMissing ? (
-              <option value={preferences.inputDeviceId}>
-                {preferences.inputLabel
-                  ? `${preferences.inputLabel} (not connected)`
-                  : "Selected microphone (not connected)"}
-              </option>
-            ) : null}
-            {inputs.map((device, index) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {deviceDisplayLabel(device, index)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-          <span>
-            {labelsHidden
-              ? "Allow microphone access to reveal device names."
-              : savedMicMissing
-                ? "Your selected mic isn't connected — sessions use the system default until it returns."
-                : "Stored in this browser; applies to new sessions. Speaker always uses the system default."}
-          </span>
-          <span className="flex shrink-0 items-center gap-2">
-            {labelsHidden ? (
-              <button
-                type="button"
-                onClick={() => void allowAccess()}
-                className="rounded-md border border-border px-2 py-1 hover:text-foreground"
-              >
-                Allow access
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              className="rounded-md border border-border px-2 py-1 hover:text-foreground"
-            >
-              Refresh
-            </button>
-          </span>
-        </div>
-        {deviceError ? (
-          <p className="text-xs text-destructive">{deviceError}</p>
-        ) : null}
-      </div>
-    </details>
-  );
 }
 
 /** Live session controls: state, mute/unmute, stop — right on the page. */
@@ -598,10 +436,19 @@ export function SessionsPanel() {
               <p className="text-sm text-muted-foreground">Aide Voice Session Transcripts</p>
               <span className="flex items-center gap-4">
                 <SessionControls />
-                <ModelPicker />
               </span>
             </div>
-            <AudioDeviceSettings />
+            <details className="rounded-lg border border-border bg-card">
+              <summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-foreground">
+                Audio
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  microphone · speaker uses your system default
+                </span>
+              </summary>
+              <div className="border-t border-border/50 p-3">
+                <AudioSettings />
+              </div>
+            </details>
             <PromptEditor />
             <ToolsSection />
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
