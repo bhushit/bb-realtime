@@ -23,12 +23,19 @@ interface SessionRow {
   events: number;
   ended: boolean;
   costUsd: number;
+  preview: string;
+  hasError: boolean;
 }
 interface EventRow {
   id: number;
   ts: number;
   kind: string;
   payload: string;
+}
+interface PluginMeta {
+  id: string;
+  name: string;
+  iconUrl: string | null;
 }
 
 function fmtTime(ts: number): string {
@@ -78,15 +85,6 @@ function GearIcon() {
   );
 }
 
-/** Stacked lines — the jump-to-transcript affordance on the live console. */
-function TranscriptIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
-      <path d="M3 4h10M3 8h10M3 12h6" />
-    </svg>
-  );
-}
-
 /**
  * The call console — a bottom-center control that owns the entire call
  * lifecycle right on the Handsfree page. Idle: a "Talk to Aide" pill. Live: it
@@ -98,9 +96,10 @@ function TranscriptIcon() {
  * reserves its own space — nothing overlaps — and stays inside the plugin's own
  * pointer/stacking context, which is what makes it reliably tappable on mobile.
  */
-function CallConsole({ onViewTranscript }: { onViewTranscript: (sessionId: string) => void }) {
+function CallConsole({ onViewTranscript, selectedId }: { onViewTranscript: (sessionId: string) => void; selectedId: string | null }) {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
+  const lastActivity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getLastActivity);
   const elapsed = useCallElapsed();
   const live = state === "live";
   const muted = state === "muted";
@@ -140,9 +139,32 @@ function CallConsole({ onViewTranscript }: { onViewTranscript: (sessionId: strin
         ? "Muted"
         : "Connected";
   const liveId = voiceAgent.getSessionId();
+  const ticker = tickerFor(lastActivity);
+  // When you're already reading the live transcript, the ticker (and the pill's
+  // transcript button) are redundant with what's on screen — hide them.
+  const viewingLive = liveId != null && selectedId === liveId;
 
   return (
-    <div className="flex h-11 max-w-full items-center overflow-hidden rounded-full border border-border bg-card shadow-lg">
+    <div className="flex w-full flex-col items-center gap-1.5">
+      {liveId && !viewingLive ? (
+        <button
+          type="button"
+          onClick={() => onViewTranscript(liveId)}
+          className="flex max-w-full items-center gap-1.5 rounded-full bg-card/70 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground"
+          title="See full transcript"
+        >
+          {ticker?.family ? (
+            <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/80">
+              <ActionGlyph family={ticker.family} />
+            </span>
+          ) : null}
+          <span className="truncate">{ticker?.text ?? "See full transcript"}</span>
+          <svg viewBox="0 0 16 16" className="size-3 shrink-0 text-muted-foreground/50" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M6 4l4 4-4 4" />
+          </svg>
+        </button>
+      ) : null}
+      <div className="flex h-11 max-w-full items-center overflow-hidden rounded-full border border-border bg-card shadow-lg">
       <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
@@ -165,21 +187,6 @@ function CallConsole({ onViewTranscript }: { onViewTranscript: (sessionId: strin
           <span className="truncate text-sm text-foreground">{label}</span>
           <span className="shrink-0 tabular-nums text-xs text-muted-foreground">{elapsed ?? ""}</span>
         </span>
-        {liveId ? (
-          <>
-            <span className="h-5 w-px bg-border" />
-            <button
-              type="button"
-              onClick={() => onViewTranscript(liveId)}
-              title="View live transcript"
-              aria-label="View live transcript"
-              className="flex h-11 shrink-0 items-center gap-1.5 px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <TranscriptIcon />
-              <span className="hidden sm:inline">Transcript</span>
-            </button>
-          </>
-        ) : null}
         <span className="h-5 w-px bg-border" />
         <button
           type="button"
@@ -191,6 +198,7 @@ function CallConsole({ onViewTranscript }: { onViewTranscript: (sessionId: strin
           <StopIcon />
         </button>
       </div>
+    </div>
   );
 }
 
@@ -228,6 +236,23 @@ const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
 
 function actionMeta(name: string): { family: ActionFamily; verb: string } {
   return ACTIONS[name] ?? { family: "other", verb: name.replace(/[._]/g, " ").replace(/^\w/, (c) => c.toUpperCase()) };
+}
+
+/**
+ * Human label for the dock's activity ticker from the agent's last event: a
+ * tool call shows its verb (with the family glyph); speech/notice show a short
+ * quote (no glyph). Returns null when there's nothing worth showing yet.
+ */
+function tickerFor(last: { kind: string; name: string; text: string } | null): { family: ActionFamily | null; text: string } | null {
+  if (!last) return null;
+  if (last.kind === "tool.call") {
+    const meta = actionMeta(last.name);
+    return { family: meta.family, text: meta.verb };
+  }
+  const text = last.text.trim();
+  if (!text) return null;
+  const clipped = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+  return { family: null, text: last.kind === "assistant" ? `“${clipped}”` : clipped };
 }
 
 /** The most salient argument to show inline next to the verb, if any. */
@@ -274,13 +299,31 @@ type Row =
   | { kind: "action"; id: number; ts: number; name: string; args: Record<string, unknown>; output: string | null }
   | { kind: "notice"; id: number; ts: number; text: string }
   | { kind: "error"; id: number; ts: number; message: string }
-  | { kind: "system"; id: number; ts: number; label: string };
+  | { kind: "sysgroup"; id: number; ts: number; events: EventRow[] };
 
-/** Fold the raw event log into display rows, pairing each tool.call with its result. */
+const CONVERSATION_KINDS = new Set(["user", "assistant", "tool.call", "tool.result", "notice", "error"]);
+
+/**
+ * Fold the raw event log into display rows: pair each tool.call with its result,
+ * and coalesce runs of low-level diagnostics (session.*, conn.*, audio.*) into a
+ * single collapsible "session connected"-style group so they don't bury the
+ * conversation. The full detail stays one tap away inside the group.
+ */
 function buildRows(events: EventRow[]): Row[] {
   const rows: Row[] = [];
   const consumed = new Set<number>();
+  let diagnostics: EventRow[] = [];
+  const flush = () => {
+    if (diagnostics.length === 0) return;
+    rows.push({ kind: "sysgroup", id: diagnostics[0].id, ts: diagnostics[0].ts, events: diagnostics });
+    diagnostics = [];
+  };
   events.forEach((event, index) => {
+    if (!CONVERSATION_KINDS.has(event.kind)) {
+      diagnostics.push(event);
+      return;
+    }
+    flush();
     const payload = parsePayload(event.payload);
     switch (event.kind) {
       case "user":
@@ -313,11 +356,19 @@ function buildRows(events: EventRow[]): Row[] {
       case "error":
         rows.push({ kind: "error", id: event.id, ts: event.ts, message: String(payload.message ?? "error") });
         break;
-      default:
-        rows.push({ kind: "system", id: event.id, ts: event.ts, label: event.kind.replace("session.", "session ") });
     }
   });
+  flush();
   return rows;
+}
+
+/** Human label for a diagnostics group, from the lifecycle events it contains. */
+function sysGroupLabel(events: EventRow[]): string {
+  const kinds = new Set(events.map((event) => event.kind));
+  if (kinds.has("session.stopped")) return "Session ended";
+  if (kinds.has("session.live")) return "Session connected";
+  if (kinds.has("session.started")) return "Session connecting";
+  return "Session activity";
 }
 
 function SpeechRow({ row }: { row: Extract<Row, { kind: "speech" }> }) {
@@ -338,29 +389,52 @@ function SpeechRow({ row }: { row: Extract<Row, { kind: "speech" }> }) {
   );
 }
 
-function ActionRow({ row }: { row: Extract<Row, { kind: "action" }> }) {
+function ActionRow({ row, plugins }: { row: Extract<Row, { kind: "action" }>; plugins: Map<string, PluginMeta> }) {
   const meta = actionMeta(row.name);
-  const object = actionObject(row.name, row.args);
   const pending = row.output === null;
   const isError = !pending && /^tool error/i.test(row.output ?? "");
   const hasArgs = Object.keys(row.args).length > 0;
+
+  // run_plugin_command reads as "Used plugin [chip]": the left square keeps the
+  // generic plugin glyph (consistent with every action row), and the plugin's
+  // real name + icon (from listPlugins) ride in a chip next to it.
+  const isPlugin = row.name === "run_plugin_command";
+  let verb = meta.verb;
+  let object = actionObject(row.name, row.args);
+  let pluginName = "";
+  let pluginIcon: string | null = null;
+  if (isPlugin) {
+    const pluginId = typeof row.args.plugin_id === "string" ? row.args.plugin_id : "";
+    const plugin = plugins.get(pluginId);
+    verb = "Used plugin";
+    pluginName = plugin?.name ?? pluginId;
+    pluginIcon = plugin?.iconUrl ?? null;
+    object = Array.isArray(row.args.argv) ? (row.args.argv as unknown[]).map(String).join(" ") : "";
+  }
+
   return (
-    <details className="group pl-2.5">
-      <summary className="flex cursor-pointer list-none items-center gap-2 py-1 text-xs">
+    <details className="group min-w-0 pl-2.5">
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 py-1 text-xs">
         <span className={cn("flex size-5 shrink-0 items-center justify-center rounded-md", isError ? "bg-destructive/15 text-destructive" : "bg-muted text-muted-foreground")}>
           <ActionGlyph family={meta.family} />
         </span>
-        <span className={cn("shrink-0 font-medium", isError ? "text-destructive" : "text-foreground/80")}>{meta.verb}</span>
-        {object ? <span className="truncate text-muted-foreground">· {object}</span> : null}
+        <span className={cn("shrink-0 font-medium", isError ? "text-destructive" : "text-foreground/80")}>{verb}</span>
+        {isPlugin && pluginName ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-1.5 py-px text-[11px] font-medium text-foreground/80">
+            {pluginIcon ? <img src={pluginIcon} alt="" className="size-3 rounded-[3px] object-contain" /> : null}
+            {pluginName}
+          </span>
+        ) : null}
+        {object ? <span className="min-w-0 truncate text-muted-foreground">· {object}</span> : null}
         {pending ? <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" /> : null}
         <Chevron />
       </summary>
       <div className="mb-1 mt-1 space-y-1 pl-7">
         {hasArgs ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px] text-muted-foreground">{JSON.stringify(row.args, null, 2)}</pre>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-[11px] text-muted-foreground">{JSON.stringify(row.args, null, 2)}</pre>
         ) : null}
         {row.output ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-[11px] text-foreground/80">{row.output}</pre>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-[11px] text-foreground/80">{row.output}</pre>
         ) : (
           <p className="text-[11px] italic text-muted-foreground">Waiting for result…</p>
         )}
@@ -384,12 +458,80 @@ function ErrorRow({ row }: { row: Extract<Row, { kind: "error" }> }) {
   );
 }
 
-function SystemRow({ row }: { row: Extract<Row, { kind: "system" }> }) {
-  return <p className="px-2 py-0.5 text-center text-[11px] italic text-muted-foreground/50">{row.label}</p>;
+function SysGroupRow({ row }: { row: Extract<Row, { kind: "sysgroup" }> }) {
+  const label = sysGroupLabel(row.events);
+  return (
+    <details className="group min-w-0">
+      <summary className="mx-auto flex w-fit cursor-pointer list-none items-center justify-center gap-1.5 py-0.5 text-[11px] text-muted-foreground/60 hover:text-muted-foreground">
+        <span className="size-1.5 rounded-full bg-muted-foreground/40" />
+        {label}
+        <span className="text-muted-foreground/40">· {row.events.length}</span>
+        <Chevron />
+      </summary>
+      <div className="mt-1 space-y-1 rounded-md bg-muted/40 p-2">
+        {row.events.map((event) => {
+          const payload = event.payload && event.payload !== "{}" ? event.payload : "";
+          return (
+            <div key={event.id} className="min-w-0 font-mono text-[10px] leading-relaxed text-muted-foreground">
+              <span className="mr-2 tabular-nums text-muted-foreground/50">{fmtTime(event.ts)}</span>
+              <span className="text-foreground/70">{event.kind}</span>
+              {payload ? <span className="break-all"> {payload}</span> : null}
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
 }
 
-function TranscriptBody({ events }: { events: EventRow[] }) {
-  const rows = buildRows(events);
+type TranscriptFilter = "all" | "talk" | "actions" | "errors";
+
+const FILTERS: { id: TranscriptFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "talk", label: "Conversation" },
+  { id: "actions", label: "Actions" },
+  { id: "errors", label: "Errors" },
+];
+
+function rowMatchesFilter(row: Row, filter: TranscriptFilter): boolean {
+  const actionErrored = row.kind === "action" && row.output !== null && /^tool error/i.test(row.output);
+  switch (filter) {
+    case "talk":
+      return row.kind === "speech" || row.kind === "notice";
+    case "actions":
+      return row.kind === "action";
+    case "errors":
+      return row.kind === "error" || actionErrored;
+    default:
+      return true;
+  }
+}
+
+function FilterBar({ value, onChange }: { value: TranscriptFilter; onChange: (next: TranscriptFilter) => void }) {
+  return (
+    <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+      {FILTERS.map((filter) => (
+        <button
+          key={filter.id}
+          type="button"
+          onClick={() => onChange(filter.id)}
+          className={cn(
+            "rounded px-2 py-0.5 text-xs transition-colors",
+            value === filter.id ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {filter.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TranscriptBody({ events, plugins, filter }: { events: EventRow[]; plugins: Map<string, PluginMeta>; filter: TranscriptFilter }) {
+  const rows = buildRows(events).filter((row) => rowMatchesFilter(row, filter));
+  if (rows.length === 0) {
+    return <p className="py-3 text-center text-sm text-muted-foreground">Nothing matches this filter.</p>;
+  }
   return (
     <div className="space-y-1 py-1.5">
       {rows.map((row) => {
@@ -397,13 +539,13 @@ function TranscriptBody({ events }: { events: EventRow[] }) {
           case "speech":
             return <SpeechRow key={row.id} row={row} />;
           case "action":
-            return <ActionRow key={row.id} row={row} />;
+            return <ActionRow key={row.id} row={row} plugins={plugins} />;
           case "notice":
             return <NoticeRow key={row.id} row={row} />;
           case "error":
             return <ErrorRow key={row.id} row={row} />;
           default:
-            return <SystemRow key={row.id} row={row} />;
+            return <SysGroupRow key={row.id} row={row} />;
         }
       })}
     </div>
@@ -468,6 +610,10 @@ export function SessionsPanel() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
+  const [filter, setFilter] = useState<TranscriptFilter>("all");
+  const [search, setSearch] = useState("");
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [plugins, setPlugins] = useState<Map<string, PluginMeta>>(() => new Map());
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Set when the transcript is opened so the first batch of events snaps to the
@@ -531,6 +677,14 @@ export function SessionsPanel() {
   useEffect(() => {
     refreshNewest();
   }, [refreshNewest]);
+  // Plugin metadata (id → name + icon) to narrate run_plugin_command; static
+  // enough to fetch once.
+  useEffect(() => {
+    rpc.call("listPlugins", null).then(
+      (result) => setPlugins(new Map(result.plugins.map((plugin) => [plugin.id, plugin]))),
+      () => undefined,
+    );
+  }, [rpc]);
   useEffect(() => {
     if (selected) {
       pendingBottom.current = true;
@@ -559,42 +713,73 @@ export function SessionsPanel() {
   }, [events, selected]);
 
   const current = sessions?.find((session) => session.id === selected) ?? null;
+  const query = search.trim().toLowerCase();
+  // Client-side filter over already-loaded sessions (Load more fetches the rest).
+  const visibleSessions = sessions?.filter(
+    (session) =>
+      (!errorsOnly || session.hasError) &&
+      (!query || session.preview.toLowerCase().includes(query) || fmtDate(session.startedAt).toLowerCase().includes(query)),
+  );
 
   return (
     <div className="flex h-full flex-col">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-5">
-      <div className="mx-auto w-full max-w-3xl space-y-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-5">
+      <div className="mx-auto w-full min-w-0 max-w-3xl space-y-4">
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
         {selected ? (
           <>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={() => setSelected(null)}
-                className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 ← All sessions
               </button>
+              <FilterBar value={filter} onChange={setFilter} />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-3.5 py-2.5">
+              <div className="flex items-center gap-2.5">
+                {current && !current.ended ? (
+                  <span className="size-2.5 shrink-0 animate-pulse rounded-full bg-primary" />
+                ) : null}
+                <div className="leading-tight">
+                  <div className="text-sm font-medium text-foreground">
+                    {current ? fmtDate(current.startedAt) : "Live session"}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {current ? (current.ended ? "Ended" : "Live now") : "Connecting…"}
+                    {current ? ` · ${duration(current.startedAt, current.lastEventAt)}` : ""}
+                  </div>
+                </div>
+              </div>
               {current ? (
-                <span className="text-sm text-foreground">
-                  {fmtDate(current.startedAt)} · {duration(current.startedAt, current.lastEventAt)} ·{" "}
-                  {current.ended ? "ended" : "live"} ·{" "}
-                  {current.costUsd > 0 ? `~$${current.costUsd.toFixed(4)}` : "no usage recorded"}
-                </span>
+                <div className="flex items-center gap-4 tabular-nums">
+                  <span className="flex flex-col items-end">
+                    <span className="text-sm font-medium text-foreground">{current.events}</span>
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground/60">events</span>
+                  </span>
+                  <span className="flex flex-col items-end">
+                    <span className="text-sm font-medium text-foreground">
+                      {current.costUsd > 0 ? `~$${current.costUsd.toFixed(4)}` : "—"}
+                    </span>
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground/60">cost</span>
+                  </span>
+                </div>
               ) : null}
             </div>
             <div className="rounded-lg border border-border bg-card px-2 py-1">
               {events.length === 0 ? (
                 <p className="py-3 text-center text-sm text-muted-foreground">No events yet.</p>
               ) : (
-                <TranscriptBody events={events} />
+                <TranscriptBody events={events} plugins={plugins} filter={filter} />
               )}
             </div>
           </>
         ) : (
           <>
             <div className="flex items-center justify-between gap-3">
-              <p className="text-sm text-muted-foreground">Aide Voice Session Transcripts</p>
+              <p className="text-sm font-medium text-foreground">Voice sessions</p>
               <button
                 type="button"
                 onClick={openHandsfreeSettings}
@@ -606,6 +791,29 @@ export function SessionsPanel() {
                 Settings
               </button>
             </div>
+            {sessions && sessions.length > 0 ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search sessions…"
+                  className="min-w-0 flex-1 rounded-md border border-border bg-card px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                <button
+                  type="button"
+                  onClick={() => setErrorsOnly((value) => !value)}
+                  className={cn(
+                    "shrink-0 rounded-md border px-2.5 py-1.5 text-xs transition-colors",
+                    errorsOnly
+                      ? "border-destructive/50 bg-destructive/10 text-destructive"
+                      : "border-border text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  Errors
+                </button>
+              </div>
+            ) : null}
             <div className="divide-y divide-border/50 rounded-lg border border-border bg-card">
               {sessions === null ? (
                 <p className="p-3 text-sm text-muted-foreground">Loading…</p>
@@ -613,24 +821,34 @@ export function SessionsPanel() {
                 <p className="p-3 text-sm text-muted-foreground">
                   No sessions yet. Tap “Talk to Aide” below to start your first one.
                 </p>
+              ) : visibleSessions && visibleSessions.length === 0 ? (
+                <p className="p-3 text-sm text-muted-foreground">No sessions match.</p>
               ) : (
-                sessions.map((session) => (
+                visibleSessions?.map((session) => (
                   <button
                     key={session.id}
                     type="button"
                     onClick={() => setSelected(session.id)}
-                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent"
+                    className="flex w-full items-start gap-3 px-3 py-2.5 text-left hover:bg-accent"
                   >
-                    <span
-                      className={cn(
-                        "size-2 shrink-0 rounded-full",
-                        session.ended ? "bg-border" : "animate-pulse bg-primary",
-                      )}
-                    />
-                    <span className="flex-1 text-sm text-foreground">{fmtDate(session.startedAt)}</span>
-                    <span className="text-xs tabular-nums text-muted-foreground">
-                      {duration(session.startedAt, session.lastEventAt)} · {session.events} events ·{" "}
-                      {session.costUsd > 0 ? `~$${session.costUsd.toFixed(4)}` : "no usage"}
+                    <span className="mt-1 flex w-12 shrink-0 justify-start">
+                      {!session.ended ? (
+                        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                          <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+                          Live
+                        </span>
+                      ) : session.hasError ? (
+                        <span className="text-xs text-destructive" title="This session had an error">⚠</span>
+                      ) : null}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-foreground">
+                        {session.preview || <span className="italic text-muted-foreground">No transcript</span>}
+                      </span>
+                      <span className="mt-0.5 block text-xs tabular-nums text-muted-foreground">
+                        {fmtDate(session.startedAt)} · {duration(session.startedAt, session.lastEventAt)} · {session.events} events
+                        {session.costUsd > 0 ? ` · ~$${session.costUsd.toFixed(4)}` : ""}
+                      </span>
                     </span>
                   </button>
                 ))
@@ -654,7 +872,7 @@ export function SessionsPanel() {
       </div>
       <div className="shrink-0 border-t border-border/60 bg-background/90 px-4 py-3 backdrop-blur">
         <div className="mx-auto flex w-full max-w-3xl justify-center">
-          <CallConsole onViewTranscript={(sessionId) => setSelected(sessionId)} />
+          <CallConsole onViewTranscript={(sessionId) => setSelected(sessionId)} selectedId={selected} />
         </div>
       </div>
     </div>

@@ -114,6 +114,8 @@ export class VoiceAgent {
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   /** When the call first went live (ms), for elapsed-duration UI; null if not. */
   private liveStartedAt: number | null = null;
+  /** The most recent meaningful event, for the dock's live activity ticker. */
+  private lastActivity: { kind: string; name: string; text: string } | null = null;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -131,6 +133,13 @@ export class VoiceAgent {
    * live session's transcript.
    */
   readonly getSessionId = (): string | null => this.nonce;
+
+  /**
+   * The latest meaningful event (speech / tool call / notice), for the dock's
+   * activity ticker. Stable identity between changes so it's safe for
+   * useSyncExternalStore. The UI owns human phrasing (tool → verb).
+   */
+  readonly getLastActivity = (): { kind: string; name: string; text: string } | null => this.lastActivity;
 
   /**
    * Who is talking right now, from the data-channel signals we already track
@@ -304,7 +313,19 @@ export class VoiceAgent {
     const sessionId = this.nonce;
     const bindings = this.bindings;
     if (!sessionId || !bindings) return;
+    this.noteActivity(kind, payload);
     void bindings.rpc.call("logEvent", { sessionId, kind, payload }).catch(() => undefined);
+  }
+
+  /** Track the latest meaningful event for the dock ticker (ignores diagnostics). */
+  private noteActivity(kind: string, payload: Record<string, unknown>) {
+    let next: { kind: string; name: string; text: string } | null;
+    if (kind === "session.started") next = null;
+    else if (kind === "user" || kind === "assistant" || kind === "notice") next = { kind, name: "", text: String(payload.text ?? "") };
+    else if (kind === "tool.call") next = { kind, name: String(payload.name ?? ""), text: "" };
+    else return; // diagnostics / tool.result don't move the ticker
+    this.lastActivity = next;
+    this.emitChange();
   }
 
   /**

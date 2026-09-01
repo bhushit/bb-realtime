@@ -413,6 +413,7 @@ interface PluginInfo {
   id: string;
   name: string;
   summary: string;
+  iconUrl: string | null;
 }
 
 /** A modal checklist of installed plugins; the selection is stored as a csv. */

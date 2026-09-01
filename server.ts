@@ -144,7 +144,9 @@ export const rpcContract = defineRpcContract({
     output: z
       .object({
         plugins: z.array(
-          z.object({ id: z.string(), name: z.string(), summary: z.string() }).strict(),
+          z
+            .object({ id: z.string(), name: z.string(), summary: z.string(), iconUrl: z.string().nullable() })
+            .strict(),
         ),
       })
       .strict(),
@@ -189,6 +191,8 @@ export const rpcContract = defineRpcContract({
               events: z.number(),
               ended: z.boolean(),
               costUsd: z.number(),
+              preview: z.string(),
+              hasError: z.boolean(),
             })
             .strict(),
         ),
@@ -1109,6 +1113,7 @@ export default async function plugin(bb: BbPluginApi) {
               id: plugin.id,
               name: plugin.cliCommand?.name ?? plugin.id,
               summary: plugin.cliCommand?.summary ?? "",
+              iconUrl: plugin.iconUrl ?? null,
             }))
             .sort((a, b) => a.name.localeCompare(b.name)),
         };
@@ -1162,6 +1167,24 @@ export default async function plugin(bb: BbPluginApi) {
       const hasMore = rows.length > pageSize;
       const page = hasMore ? rows.slice(0, pageSize) : rows;
       const costStmt = db.prepare("SELECT * FROM usage_events WHERE session_id = ?");
+      // First thing the user said, as a scannable preview; fall back to Aide's
+      // opening line so a row is never blank.
+      const previewStmt = db.prepare(
+        "SELECT payload FROM session_events WHERE session_id = ? AND kind IN ('user', 'assistant') ORDER BY (kind = 'assistant'), ts, id LIMIT 1",
+      );
+      const errorStmt = db.prepare(
+        "SELECT 1 FROM session_events WHERE session_id = ? AND kind = 'error' LIMIT 1",
+      );
+      const preview = (sessionId: string): string => {
+        const found = previewStmt.get(sessionId) as { payload: string } | undefined;
+        if (!found) return "";
+        try {
+          const text = (JSON.parse(found.payload) as { text?: unknown }).text;
+          return typeof text === "string" ? text.slice(0, 140) : "";
+        } catch {
+          return "";
+        }
+      };
       return {
         hasMore,
         sessions: page.map((row) => ({
@@ -1173,6 +1196,8 @@ export default async function plugin(bb: BbPluginApi) {
           costUsd: Number(
             (costStmt.all(row.id) as UsageRow[]).reduce((sum, usage) => sum + costUsd(usage), 0).toFixed(4),
           ),
+          preview: preview(row.id),
+          hasError: errorStmt.get(row.id) !== undefined,
         })),
       };
     },
