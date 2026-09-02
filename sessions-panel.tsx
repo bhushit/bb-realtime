@@ -14,6 +14,7 @@ import {
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
+import { CompanionControls } from "./companion";
 import { cn } from "@/lib/utils";
 
 interface DeviceInfo {
@@ -858,6 +859,7 @@ export function SessionsPanel() {
                 Settings
               </button>
             </div>
+            <CompanionControls className="rounded-md border border-dashed border-border/70 px-2.5 py-1.5" />
             {sessions && sessions.length > 0 ? (
               <div className="flex items-center gap-2">
                 <input

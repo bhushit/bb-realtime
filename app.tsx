@@ -19,6 +19,7 @@ import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { SessionsPanel } from "./sessions-panel";
+import { COMPANION_TAB, CompanionTab } from "./companion";
 import { AudioSettings, BehaviorSettings, ModelsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
@@ -331,6 +332,16 @@ export default definePluginApp((app) => {
     path: "sessions",
     component: SessionsPanel,
     experimental_sidebarAccessory: SidebarLiveIndicator,
+    // Prototype: a companion split pane that shows a bb thread beside the page.
+    fixedTabs: [
+      {
+        ...COMPANION_TAB,
+        title: "Companion",
+        icon: "PanelRight",
+        component: CompanionTab,
+        layout: "flush",
+      },
+    ],
   });
   // --- Global surface trial: multiple always-reachable triggers for the same
   // singleton call. All are pure toggles; the composer button owns the binding.
