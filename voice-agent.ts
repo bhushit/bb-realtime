@@ -206,6 +206,12 @@ export class VoiceAgent {
    * and cleared on unmount. Null in realms without a mounted Handsfree page.
    */
   private companionOpener: ((threadId: string) => void) | null = null;
+  /**
+   * Opens an http(s) URL in the bb browser (from `useBbNavigate().openUrl`). Set
+   * by any mounted voice surface, independent of `bindings`. Works from any realm,
+   * so no relay is needed — the owner realm's own surface sets it.
+   */
+  private urlOpener: ((url: string) => boolean) | null = null;
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
   private lastTool: { name: string; at: number } | null = null;
 
@@ -482,6 +488,11 @@ export class VoiceAgent {
   /** The Handsfree page registers (and clears) its pane opener here. */
   setCompanionOpener(opener: ((threadId: string) => void) | null) {
     this.companionOpener = opener;
+  }
+
+  /** Any voice surface registers the bb-browser opener here. */
+  setUrlOpener(opener: ((url: string) => boolean) | null) {
+    this.urlOpener = opener;
   }
 
   /**
@@ -985,6 +996,17 @@ export class VoiceAgent {
       } else {
         this.openCompanion(threadId);
         output = "Opened the thread in the companion pane beside the conversation.";
+      }
+    } else if (name === "open_url") {
+      const url = String(args.url ?? "");
+      if (!url) {
+        output = "No url given.";
+      } else if (!this.urlOpener) {
+        output = "Can't open a browser from here right now.";
+      } else {
+        output = this.urlOpener(url)
+          ? "Opened the URL in the bb browser."
+          : "The bb browser couldn't open that URL.";
       }
     } else if (
       name === "start_thread" &&

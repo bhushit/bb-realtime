@@ -10,6 +10,7 @@ import {
   definePluginApp,
   experimental_useSidebarThreadActions,
   useBbContext,
+  useBbNavigate,
   useComposer,
   useComposerView,
   useRealtime,
@@ -64,6 +65,12 @@ function AideVoiceButton() {
   // Catch up immediately when this surface mounts (e.g. a realm rebuilt after
   // navigation), rather than waiting up to a heartbeat to learn a call is live.
   useEffect(() => voiceAgent.requestPresence(), []);
+
+  // Let the agent open URLs in the bb browser (works from any surface).
+  const navigate = useBbNavigate();
+  useEffect(() => {
+    voiceAgent.setUrlOpener((url) => navigate.openUrl(url));
+  }, [navigate]);
 
   // Thread-event notifications (digested; disabled via `notifications` setting).
   useRealtime("aide-thread-event", (payload) => {

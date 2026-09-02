@@ -9,6 +9,7 @@ import {
   experimental_useAppPanel,
   experimental_useSidebarThreadActions,
   useBbContext,
+  useBbNavigate,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
@@ -666,6 +667,12 @@ export function SessionsPanel() {
     return () => voiceAgent.setCompanionOpener(null);
   }, [appPanel]);
   useRealtime("voice-companion", (payload) => voiceAgent.applyCompanion(payload));
+
+  // Open URLs in the bb browser (works from any surface; harmless duplicate set).
+  const navigate = useBbNavigate();
+  useEffect(() => {
+    voiceAgent.setUrlOpener((url) => navigate.openUrl(url));
+  }, [navigate]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
