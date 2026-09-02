@@ -652,11 +652,20 @@ export function SessionsPanel() {
           ...(targetProjectId ? { projectId: targetProjectId } : {}),
           focusPrompt: true,
         }),
-      // Let the agent show a thread in the companion split pane (no navigation).
-      openCompanionThread: (id) =>
-        appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB, target: { threadId: id } }),
     });
-  }, [rpc, threadId, projectId, sidebarActions, appPanel]);
+  }, [rpc, threadId, projectId, sidebarActions]);
+
+  // Register the companion-pane opener OUTSIDE the voice binding, so a composer's
+  // bind() (which replaces the whole bindings object) can't clobber it. The agent's
+  // show_thread runs in whichever realm owns the call and relays over
+  // voice-companion; the realm with the page mounted (this one) opens the pane.
+  useEffect(() => {
+    voiceAgent.setCompanionOpener((id) =>
+      appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB, target: { threadId: id } }),
+    );
+    return () => voiceAgent.setCompanionOpener(null);
+  }, [appPanel]);
+  useRealtime("voice-companion", (payload) => voiceAgent.applyCompanion(payload));
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);

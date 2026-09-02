@@ -86,12 +86,6 @@ export interface Bindings {
    */
   composer?: ComposerBinding;
   openNewThread: (projectId: string | null) => void;
-  /**
-   * Show a thread in the Handsfree page's companion split pane, without
-   * navigating. Present only when a companion-capable surface (the page) is
-   * bound; absent elsewhere, so the tool reports honestly.
-   */
-  openCompanionThread?: (threadId: string) => void;
 }
 
 interface SessionHandle {
@@ -206,6 +200,12 @@ export class VoiceAgent {
   private remoteExpiryTimer: ReturnType<typeof setInterval> | null = null;
   /** Guards the once-per-realm `client.hello` observability record. */
   private helloed = false;
+  /**
+   * Opens a thread in the Handsfree page's companion split pane. Set by the page
+   * surface independently of `bindings` (so a composer's bind() can't clobber it)
+   * and cleared on unmount. Null in realms without a mounted Handsfree page.
+   */
+  private companionOpener: ((threadId: string) => void) | null = null;
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
   private lastTool: { name: string; at: number } | null = null;
 
@@ -474,6 +474,37 @@ export class VoiceAgent {
       this.remotePresence = null;
       this.disarmRemoteExpiry();
       this.emitChange();
+    }
+  }
+
+  // ---- companion pane (the Handsfree page's right split pane) ----
+
+  /** The Handsfree page registers (and clears) its pane opener here. */
+  setCompanionOpener(opener: ((threadId: string) => void) | null) {
+    this.companionOpener = opener;
+  }
+
+  /**
+   * Show a thread in the companion pane. If this realm hosts the page, open it
+   * directly; otherwise relay over the bus so whichever realm has the mounted
+   * page opens it (the call may be owned by a composer realm with no pane).
+   */
+  private openCompanion(threadId: string) {
+    if (this.companionOpener) {
+      this.companionOpener(threadId);
+      return;
+    }
+    const rpc = this.bindings?.rpc;
+    if (rpc) {
+      void rpc.call("sendCompanion", { threadId, client: clientId, realm: realmId }).catch(() => undefined);
+    }
+  }
+
+  /** Handle a relayed companion request; only a realm with a mounted page acts. */
+  applyCompanion(payload: unknown) {
+    const threadId = (payload as { threadId?: unknown } | null)?.threadId;
+    if (typeof threadId === "string" && threadId && this.companionOpener) {
+      this.companionOpener(threadId);
     }
   }
 
@@ -949,13 +980,10 @@ export class VoiceAgent {
       }
     } else if (name === "show_thread") {
       const threadId = String(args.thread_id ?? "");
-      if (!bindings.openCompanionThread) {
-        output =
-          "The companion pane is only available on the Handsfree page. Ask the user to open Handsfree, or use focus_thread.";
-      } else if (!threadId) {
+      if (!threadId) {
         output = "No thread_id given.";
       } else {
-        bindings.openCompanionThread(threadId);
+        this.openCompanion(threadId);
         output = "Opened the thread in the companion pane beside the conversation.";
       }
     } else if (
