@@ -1049,10 +1049,17 @@ export default async function plugin(bb: BbPluginApi) {
           rows: 30,
           scope,
           title,
-          start: command
-            ? { mode: "command", command }
-            : { mode: "shell" },
+          // Keep a shell behind one-shot commands so their output remains in a
+          // visible companion tab instead of the PTY exiting (and bb removing
+          // the tab) immediately after `pwd`, `git status`, etc. finish.
+          start: { mode: "shell" },
         });
+        if (command) {
+          await bb.sdk.terminals.input({
+            terminalId: terminal.id,
+            dataBase64: Buffer.from(`${command}\n`, "utf8").toString("base64"),
+          });
+        }
         // The terminal itself is durable server state. This signal is only the
         // client-local reveal intent: whichever Handsfree page is mounted asks
         // bb to add the existing session to its native companion tab strip.
