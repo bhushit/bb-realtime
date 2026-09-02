@@ -86,6 +86,12 @@ export interface Bindings {
    */
   composer?: ComposerBinding;
   openNewThread: (projectId: string | null) => void;
+  /**
+   * Show a thread in the Handsfree page's companion split pane, without
+   * navigating. Present only when a companion-capable surface (the page) is
+   * bound; absent elsewhere, so the tool reports honestly.
+   */
+  openCompanionThread?: (threadId: string) => void;
 }
 
 interface SessionHandle {
@@ -941,6 +947,17 @@ export class VoiceAgent {
         bindings.composer.updateText((current) => (current ? `${current}\n${text}` : text));
         output = "Text appended to composer.";
       }
+    } else if (name === "show_thread") {
+      const threadId = String(args.thread_id ?? "");
+      if (!bindings.openCompanionThread) {
+        output =
+          "The companion pane is only available on the Handsfree page. Ask the user to open Handsfree, or use focus_thread.";
+      } else if (!threadId) {
+        output = "No thread_id given.";
+      } else {
+        bindings.openCompanionThread(threadId);
+        output = "Opened the thread in the companion pane beside the conversation.";
+      }
     } else if (
       name === "start_thread" &&
       !(typeof args.prompt === "string" && args.prompt.trim())
@@ -964,7 +981,7 @@ export class VoiceAgent {
       // call; have the model point the user to the tap target instead.
       this.logDiag("nav.blocked", { name });
       output =
-        "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. Instead, tell the user in one short sentence exactly what to tap to get there themselves.";
+        "On mobile you can't navigate the app during a live call — it would background the call and cut the mic. Do NOT navigate. If this is a thread, use show_thread to display it in the companion pane beside the call instead. Otherwise, tell the user in one short sentence what to tap.";
     } else {
       // These tools navigate (…→ threads.open) which would background a live
       // mobile call — tell the server not to focus so the work still happens but

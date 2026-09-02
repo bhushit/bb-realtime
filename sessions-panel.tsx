@@ -6,6 +6,7 @@
 // (which collapses on mobile) or switch sidebars to talk.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
+  experimental_useAppPanel,
   experimental_useSidebarThreadActions,
   useBbContext,
   useRealtime,
@@ -14,7 +15,7 @@ import {
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
-import { CompanionControls } from "./companion";
+import { COMPANION_TAB, CompanionControls } from "./companion";
 import { cn } from "@/lib/utils";
 
 interface DeviceInfo {
@@ -631,6 +632,7 @@ export function SessionsPanel() {
   const rpc = useRpc<typeof rpcContract>();
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
+  const appPanel = experimental_useAppPanel();
   useEscapeToClose();
 
   // The Handsfree page has no composer, so nothing else binds the voice agent
@@ -650,8 +652,11 @@ export function SessionsPanel() {
           ...(targetProjectId ? { projectId: targetProjectId } : {}),
           focusPrompt: true,
         }),
+      // Let the agent show a thread in the companion split pane (no navigation).
+      openCompanionThread: (id) =>
+        appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB, target: { threadId: id } }),
     });
-  }, [rpc, threadId, projectId, sidebarActions]);
+  }, [rpc, threadId, projectId, sidebarActions, appPanel]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);

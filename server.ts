@@ -382,6 +382,7 @@ function toolSchemas(pluginCommands: PluginCommandInfo[] = []) {
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+    { type: "function", name: "show_thread", description: "Show a thread in the companion pane beside the conversation, WITHOUT navigating away — this keeps the voice call alive. Prefer this over focus_thread when the user wants to see a thread during a live call.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
   ];
 }
 
@@ -1144,7 +1145,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { sdp: text };
     },
     async getTools() {
-      const local = new Set(["set_composer_text", "append_composer_text"]);
+      const local = new Set(["set_composer_text", "append_composer_text", "show_thread"]);
       const pluginCommands = await exposedPluginCommands();
       return {
         tools: toolSchemas(pluginCommands).map((tool) => ({
