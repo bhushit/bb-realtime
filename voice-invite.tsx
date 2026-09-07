@@ -172,6 +172,13 @@ function useInvitePrefs(): { prefs: InvitePrefs; loaded: boolean } {
   }, [rpc]);
   useEffect(refetch, [refetch]);
   useRealtime("config-changed", refetch);
+  // Fail open on a timer: if the backend never answers, ring on defaults
+  // after 3s rather than staying silent forever. A hanging getConfig must
+  // degrade to a possibly-unwanted ring, never to a missed call.
+  useEffect(() => {
+    const fallback = setTimeout(() => setLoaded(true), 3000);
+    return () => clearTimeout(fallback);
+  }, []);
   return { prefs: prefs ?? INVITE_PREF_DEFAULTS, loaded };
 }
 
