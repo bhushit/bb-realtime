@@ -261,8 +261,7 @@ export function ModelsSettings() {
 
   return (
     <div className="space-y-4">
-      <CredentialCard />
-      <label className="block space-y-1">
+      <CredentialCard />      <label className="block space-y-1">
         <span className="text-sm font-medium text-foreground">Model</span>
         <select
           value={model}
@@ -298,7 +297,23 @@ export function ModelsSettings() {
           ))}
         </select>
       </label>
+      <BuildStamp />
     </div>
+  );
+}
+
+/**
+ * Visible frontend build marker (Settings → Plugins → Handsfree → Model &
+ * voice): bump BUILD_STAMP with each iteration so a device can prove which
+ * bundle it is actually running — webviews are aggressive JS cachers.
+ */
+export const BUILD_STAMP = "ring-v3";
+
+function BuildStamp() {
+  return (
+    <p className="text-[11px] tabular-nums text-muted-foreground/60" title="Frontend build marker">
+      Build {BUILD_STAMP}
+    </p>
   );
 }
 

@@ -91,6 +91,22 @@ test("mobile settings never replace desktop navigation and migrate the prototype
   } finally { await harness.lifecycle.dispose(); }
 });
 
+test("ring broadcasts an incoming-call invite to every window", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.runCli(["ring", "--title", "Morning brief", "--ttl", "45"]);
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Morning brief/);
+    const signal = harness.inspection.realtimeSignals.find((s) => s.channel === "voice-invite");
+    assert.ok(signal, "expected a voice-invite broadcast");
+    const payload = signal!.payload as Record<string, unknown>;
+    assert.equal(payload.title, "Morning brief");
+    assert.match(String(payload.inviteId), /^inv-/);
+    assert.ok((payload.expiresAt as number) > (payload.createdAt as number));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
 test("desktop focus still opens the real bb thread through the original SDK operation", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "handsfree", sdk: {
     threads: { open: async () => ({ delivered: 1 }) },

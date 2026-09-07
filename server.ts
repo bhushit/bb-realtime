@@ -1088,6 +1088,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb handsfree stop" },
       { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb handsfree mute" },
       { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb handsfree unmute" },
+      { name: "ring", summary: "Ring every connected bb window with an incoming voice-call invite (Tier-0 autonomous invocation).", usage: 'bb handsfree ring [--title "..."] [--briefing "..."] [--ttl 60]' },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
@@ -1100,6 +1101,7 @@ export default async function plugin(bb: BbPluginApi) {
         "  bb handsfree usage [--days N] [--json] voice-session tokens and estimated cost",
         "  bb handsfree stop                     stop any active voice session",
         "  bb handsfree mute | unmute            mute/unmute the active session's mic",
+        '  bb handsfree ring [--title "..."]     ring every window with an incoming-call invite',
       ].join("\n");
       try {
         if (command === undefined || command === "help" || command === "--help" || command === "-h") {
@@ -1114,6 +1116,33 @@ export default async function plugin(bb: BbPluginApi) {
           // session whose nonce differs — an unknown nonce stops them all.
           bb.realtime.publish("voice-call", { nonce: `cli-stop-${Date.now()}` });
           return { exitCode: 0, stdout: "Stop signal broadcast to all bb windows." };
+        }
+        if (command === "ring") {
+          // Tier-0 autonomous invocation ("the call"): broadcast an
+          // incoming-call invite that every connected surface rings on until
+          // the user accepts (which starts a normal voice session),
+          // snoozes, dismisses, or the invite expires. Automations invoke
+          // this on a schedule instead of starting audio themselves — the
+          // human is the arbiter, so no mic-busy detection is needed.
+          const flag = (name: string): string | null => {
+            const index = rest.indexOf(`--${name}`);
+            if (index < 0) return null;
+            const value = rest[index + 1];
+            return value !== undefined && !value.startsWith("--") ? value : null;
+          };
+          const title = flag("title")?.trim() || "Aide wants to talk";
+          const briefing = flag("briefing")?.trim() || "";
+          const ttlSec = Math.min(Math.max(Number(flag("ttl") ?? 60) || 60, 10), 600);
+          const now = Date.now();
+          const invite = {
+            inviteId: `inv-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            title: title.slice(0, 120),
+            briefing: briefing.slice(0, 500),
+            createdAt: now,
+            expiresAt: now + ttlSec * 1000,
+          };
+          bb.realtime.publish("voice-invite", invite);
+          return { exitCode: 0, stdout: `Ringing all bb windows: "${invite.title}" (${invite.inviteId}, expires in ${ttlSec}s).` };
         }
         if (command === "live") {
           const live = await liveThreads();
