@@ -311,7 +311,7 @@ export function ModelsSettings() {
  * voice): bump BUILD_STAMP with each iteration so a device can prove which
  * bundle it is actually running — webviews are aggressive JS cachers.
  */
-export const BUILD_STAMP = "ring-v8";
+export const BUILD_STAMP = "ring-v9";
 
 function BuildStamp() {
   return (

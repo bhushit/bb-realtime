@@ -2,7 +2,8 @@
 // `voice-invite` with Accept / Snooze / Dismiss. Accept starts a normal voice
 // session (the click is the user gesture mic + playback need); snooze re-rings
 // locally after N minutes; dismiss or expiry just goes quiet.
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { HTMLAttributes, PointerEvent as ReactPointerEvent } from "react";
 import {
   experimental_useSidebarThreadActions,
   useBbContext,
@@ -75,16 +76,17 @@ function useRingtone(ringing: boolean) {
     };
   }, [ringing]);
 }
-function InviteBody({ onAccept, onDismiss, snoozeMinutes }: {
+function InviteBody({ onAccept, onDismiss, snoozeMinutes, dragHandleProps }: {
   onAccept: () => void;
   onDismiss: () => void;
   snoozeMinutes: number;
+  dragHandleProps: HTMLAttributes<HTMLDivElement>;
 }) {
   const invite = useSyncExternalStore(inviteStore.subscribe, inviteStore.getSnapshot);
   if (!invite) return null;
   return (
     <div className="w-full">
-      <div className="flex items-center gap-2">
+      <div className="flex cursor-grab touch-none select-none items-center gap-2 active:cursor-grabbing" {...dragHandleProps}>
         <span className="size-2.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden />
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Incoming call
@@ -171,6 +173,77 @@ function useInvitePrefs(): { prefs: InvitePrefs; loaded: boolean } {
   useEffect(refetch, [refetch]);
   useRealtime("config-changed", refetch);
   return { prefs: prefs ?? INVITE_PREF_DEFAULTS, loaded };
+}
+
+/**
+ * Draggable overlay position, persisted per browser. The whole toast follows
+ * a drag from any header; a press without movement still counts as a click
+ * (expand/minimize), told apart by a small movement threshold.
+ */
+const OVERLAY_POS_KEY = "bb-handsfree.invite-pos";
+
+function useOverlayPos() {
+  const [offset, setOffset] = useState<{ x: number; y: number }>(() => {
+    try {
+      const raw = typeof window === "undefined" ? null : window.localStorage.getItem(OVERLAY_POS_KEY);
+      const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+      if (
+        parsed && typeof parsed === "object" &&
+        typeof (parsed as { x?: unknown }).x === "number" &&
+        typeof (parsed as { y?: unknown }).y === "number" &&
+        Math.abs((parsed as { x: number }).x) < 2000 &&
+        Math.abs((parsed as { y: number }).y) < 2000
+      ) {
+        return { x: (parsed as { x: number }).x, y: (parsed as { y: number }).y };
+      }
+    } catch {
+      /* fall through to the default corner */
+    }
+    return { x: 0, y: 0 };
+  });
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
+  const drag = useRef<{ px: number; py: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const suppressClick = useRef(false);
+
+  const onPointerDown = (event: ReactPointerEvent) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+    drag.current = { px: event.clientX, py: event.clientY, ox: offsetRef.current.x, oy: offsetRef.current.y, moved: false };
+  };
+  const onPointerMove = (event: ReactPointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const next = { x: Math.round(d.ox + event.clientX - d.px), y: Math.round(d.oy + event.clientY - d.py) };
+    if (Math.abs(next.x - d.ox) + Math.abs(next.y - d.oy) > 4) d.moved = true;
+    if (d.moved) setOffset(next);
+  };
+  const onPointerUp = (event: ReactPointerEvent) => {
+    const d = drag.current;
+    drag.current = null;
+    suppressClick.current = !!d?.moved;
+    if (d?.moved) {
+      const next = { x: Math.round(d.ox + event.clientX - d.px), y: Math.round(d.oy + event.clientY - d.py) };
+      setOffset(next);
+      try {
+        window.localStorage.setItem(OVERLAY_POS_KEY, JSON.stringify(next));
+      } catch {
+        /* position is a nicety */
+      }
+    }
+  };
+  /** False when the press turned into a drag — callers skip their click action. */
+  const clickAllowed = () => {
+    const allowed = !suppressClick.current;
+    suppressClick.current = false;
+    return allowed;
+  };
+  return {
+    offset,
+    dragHandleProps: { onPointerDown, onPointerMove, onPointerUp } as HTMLAttributes<HTMLDivElement>,
+    chipHandleProps: { onPointerDown, onPointerMove, onPointerUp } as HTMLAttributes<HTMLButtonElement>,
+    clickAllowed,
+  };
 }
 
 /**
@@ -280,15 +353,23 @@ export function GlobalInviteOverlay() {
     inviteStore.dismiss();
     resolve("dismissed");
   };
+  const { offset, dragHandleProps, chipHandleProps, clickAllowed } = useOverlayPos();
+  // Inline z-index (not a class): side panels and drawers have beaten the
+  // themed z-50 scale before, and a ringing phone must win stacking fights.
+  const frameStyle = { top: 16, right: 16, transform: `translate(${offset.x}px, ${offset.y}px)`, zIndex: 100 } as const;
   if (!showInvite && showLive && !expanded) {
     return (
       <button
         type="button"
-        onClick={() => setExpanded(true)}
+        onClick={() => {
+          if (clickAllowed()) setExpanded(true);
+        }}
+        {...chipHandleProps}
         title={accepted?.title ? `On call — ${accepted.title}. Show controls.` : "On call. Show controls."}
         aria-label={accepted?.title ? `On call — ${accepted.title}. Show controls.` : "On call. Show controls."}
+        style={frameStyle}
         className={cn(
-          "fixed right-4 top-4 z-50 flex items-center gap-1.5",
+          "fixed flex cursor-grab touch-none select-none items-center gap-1.5 active:cursor-grabbing",
           "rounded-full border border-primary/40 bg-card px-3 py-1.5 shadow-xl",
           "text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground",
           muted && "border-destructive/50 text-destructive hover:text-destructive",
@@ -307,33 +388,35 @@ export function GlobalInviteOverlay() {
       onKeyDown={(event) => {
         if (event.key === "Escape" && showInvite) dismiss();
       }}
-      className={cn(
-        "fixed right-4 top-4 z-50 w-80 max-w-[calc(100vw-2rem)]",
-        "rounded-xl border border-primary/40 bg-card p-3.5 shadow-xl",
-      )}
+      style={frameStyle}
+      className="fixed w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-primary/40 bg-card p-3.5 shadow-xl"
     >
       {showInvite && invite ? (
-        <InviteBody onAccept={accept} onDismiss={dismiss} snoozeMinutes={prefs.snoozeMinutes} />
+        <InviteBody onAccept={accept} onDismiss={dismiss} snoozeMinutes={prefs.snoozeMinutes} dragHandleProps={dragHandleProps} />
       ) : (
+        // Bare controls, no box-in-box: the LiveCallControls pill already
+        // carries its own chrome. The header drags and minimizes on click —
+        // a whole row beats a 12px chevron next to stacked panels.
         <div className="w-full">
-          <div className="flex items-center gap-2">
+          <div
+            className="flex cursor-grab touch-none select-none items-center gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-accent active:cursor-grabbing"
+            onClick={() => {
+              if (clickAllowed()) setExpanded(false);
+            }}
+            title="Minimize call controls"
+            {...dragHandleProps}
+          >
             <span className="size-2.5 shrink-0 rounded-full bg-primary" aria-hidden />
             <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
               On call{accepted?.title ? ` — ${accepted.title}` : ""}
             </span>
-            <button
-              type="button"
-              onClick={() => setExpanded(false)}
-              aria-label="Minimize call controls"
-              title="Minimize"
-              className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
+            <span className="ml-auto flex size-6 shrink-0 items-center justify-center text-muted-foreground" aria-hidden>
               <svg viewBox="0 0 16 16" className="size-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
                 <path d="M4 10l4-4 4 4" />
               </svg>
-            </button>
+            </span>
           </div>
-          <div className="mt-2.5 flex justify-center">
+          <div className="mt-2 flex justify-center">
             <LiveCallControls />
           </div>
         </div>
