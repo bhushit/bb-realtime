@@ -128,6 +128,10 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
+        incomingCalls: z.boolean(),
+        ringtone: z.boolean(),
+        snoozeMinutes: z.number(),
+        greetFirst: z.boolean(),
       })
       .strict(),
   },
@@ -142,6 +146,10 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
+        incomingCalls: z.boolean().optional(),
+        ringtone: z.boolean().optional(),
+        snoozeMinutes: z.number().int().min(1).max(120).optional(),
+        greetFirst: z.boolean().optional(),
       })
       .strict(),
     output: z
@@ -153,6 +161,10 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
+        incomingCalls: z.boolean(),
+        ringtone: z.boolean(),
+        snoozeMinutes: z.number().int().min(1).max(120),
+        greetFirst: z.boolean(),
       })
       .strict(),
   },
@@ -524,6 +536,10 @@ export default async function plugin(bb: BbPluginApi) {
     pluginCommands: string;
     credentialPreference: CredentialPreference;
     shortcuts: Shortcuts;
+    incomingCalls: boolean;
+    ringtone: boolean;
+    snoozeMinutes: number;
+    greetFirst: boolean;
   }
   const CONFIG_KEY = "config";
   const CONFIG_DEFAULTS: VoiceConfig = {
@@ -534,9 +550,17 @@ export default async function plugin(bb: BbPluginApi) {
     pluginCommands: "all",
     credentialPreference: "auto",
     shortcuts: { ...DEFAULT_SHORTCUTS },
+    incomingCalls: true,
+    ringtone: true,
+    snoozeMinutes: 10,
+    greetFirst: true,
   };
   async function readConfig(): Promise<VoiceConfig> {
     const stored = (await bb.storage.kv.get<Partial<VoiceConfig> & { viewBehavior?: string }>(CONFIG_KEY)) ?? {};
+    const snoozeMinutes =
+      typeof stored.snoozeMinutes === "number" && Number.isInteger(stored.snoozeMinutes)
+        ? Math.min(Math.max(stored.snoozeMinutes, 1), 120)
+        : CONFIG_DEFAULTS.snoozeMinutes;
     return {
       model: isModel(stored.model) ? stored.model : CONFIG_DEFAULTS.model,
       voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
@@ -549,6 +573,11 @@ export default async function plugin(bb: BbPluginApi) {
         ? stored.credentialPreference
         : CONFIG_DEFAULTS.credentialPreference,
       shortcuts: normalizeShortcuts(stored.shortcuts),
+      incomingCalls:
+        typeof stored.incomingCalls === "boolean" ? stored.incomingCalls : CONFIG_DEFAULTS.incomingCalls,
+      ringtone: typeof stored.ringtone === "boolean" ? stored.ringtone : CONFIG_DEFAULTS.ringtone,
+      snoozeMinutes,
+      greetFirst: typeof stored.greetFirst === "boolean" ? stored.greetFirst : CONFIG_DEFAULTS.greetFirst,
     };
   }
   async function writeConfig(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
@@ -1136,6 +1165,10 @@ export default async function plugin(bb: BbPluginApi) {
           // snoozes, dismisses, or the invite expires. Automations invoke
           // this on a schedule instead of starting audio themselves — the
           // human is the arbiter, so no mic-busy detection is needed.
+          const { incomingCalls, ringtone } = await readConfig();
+          if (!incomingCalls) {
+            return { exitCode: 0, stdout: "Incoming calls are disabled in settings; not ringing." };
+          }
           const flag = (name: string): string | null => {
             const index = rest.indexOf(`--${name}`);
             if (index < 0) return null;
@@ -1154,7 +1187,7 @@ export default async function plugin(bb: BbPluginApi) {
             expiresAt: now + ttlSec * 1000,
           };
           bb.realtime.publish(INVITE_CHANNEL, invite);
-          if (!rest.includes("--no-banner")) {
+          if (ringtone && !rest.includes("--no-banner")) {
             // Native OS banner (macOS Notification Center included) via the
             // push plugin's global "notification" listener: reaches
             // backgrounded tabs and the desktop app, where our overlay can't

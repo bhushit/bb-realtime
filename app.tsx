@@ -24,7 +24,7 @@ import { GlobalInviteOverlay } from "./voice-invite.tsx";
 import { SessionsPanel } from "./sessions-panel";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
-import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
+import { AudioSettings, BehaviorSettings, IncomingCallsSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
@@ -356,6 +356,11 @@ export default definePluginApp((app) => {
     id: "behavior",
     title: "Behavior",
     component: BehaviorSettings,
+  });
+  app.slots.settingsSection({
+    id: "incoming-calls",
+    title: "Incoming calls",
+    component: IncomingCallsSettings,
   });
   app.slots.settingsSection({
     id: "audio",

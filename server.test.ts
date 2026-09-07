@@ -152,3 +152,37 @@ test("desktop focus still opens the real bb thread through the original SDK oper
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
   } finally { await harness.lifecycle.dispose(); }
 });
+
+test("incoming-call preferences round-trip through getConfig/setConfig", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const current = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(current.incomingCalls, true);
+    assert.equal(current.ringtone, true);
+    assert.equal(current.snoozeMinutes, 10);
+    assert.equal(current.greetFirst, true);
+    const saved = await harness.behavior.callRpc("setConfig", {
+      incomingCalls: false, ringtone: false, snoozeMinutes: 5, greetFirst: false,
+    }) as any;
+    assert.equal(saved.incomingCalls, false);
+    assert.equal(saved.ringtone, false);
+    assert.equal(saved.snoozeMinutes, 5);
+    assert.equal(saved.greetFirst, false);
+    await assert.rejects(harness.behavior.callRpc("setConfig", { snoozeMinutes: 0 }));
+    await assert.rejects(harness.behavior.callRpc("setConfig", { snoozeMinutes: "soon" }));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("ring stays silent while incoming calls are disabled", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    await bb.storage.kv.set("config", { incomingCalls: false });
+    const result = await harness.behavior.runCli(["ring", "--title", "Should not ring"]);
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /disabled/);
+    assert.equal(harness.inspection.realtimeSignals.some((s) => s.channel === "voice-invite"), false);
+    assert.equal(harness.inspection.realtimeSignals.some((s) => s.channel === "notification"), false);
+  } finally { await harness.lifecycle.dispose(); }
+});

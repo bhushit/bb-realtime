@@ -2,13 +2,14 @@
 // `voice-invite` with Accept / Snooze / Dismiss. Accept starts a normal voice
 // session (the click is the user gesture mic + playback need); snooze re-rings
 // locally after N minutes; dismiss or expiry just goes quiet.
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   experimental_useSidebarThreadActions,
   useBbContext,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
@@ -74,7 +75,11 @@ function useRingtone(ringing: boolean) {
     };
   }, [ringing]);
 }
-function InviteBody({ onAccept, onDismiss }: { onAccept: () => void; onDismiss: () => void }) {
+function InviteBody({ onAccept, onDismiss, snoozeMinutes }: {
+  onAccept: () => void;
+  onDismiss: () => void;
+  snoozeMinutes: number;
+}) {
   const invite = useSyncExternalStore(inviteStore.subscribe, inviteStore.getSnapshot);
   if (!invite) return null;
   return (
@@ -100,11 +105,11 @@ function InviteBody({ onAccept, onDismiss }: { onAccept: () => void; onDismiss: 
         </button>
         <button
           type="button"
-          onClick={() => inviteStore.snooze(DEFAULT_SNOOZE_MINUTES)}
-          title={`Ring again in ${DEFAULT_SNOOZE_MINUTES} minutes`}
+          onClick={() => inviteStore.snooze(snoozeMinutes)}
+          title={`Ring again in ${snoozeMinutes} minutes`}
           className="rounded-full border border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          Snooze {DEFAULT_SNOOZE_MINUTES}m
+          Snooze {snoozeMinutes}m
         </button>
         <button
           type="button"
@@ -118,6 +123,54 @@ function InviteBody({ onAccept, onDismiss }: { onAccept: () => void; onDismiss: 
       </div>
     </div>
   );
+}
+
+/**
+ * This surface's incoming-call preferences (Settings → Plugins → Handsfree →
+ * Incoming calls), live-refreshed like every other settings consumer. Server
+ * defaults apply until the first fetch lands, so a slow backend still rings.
+ */
+interface InvitePrefs {
+  incomingCalls: boolean;
+  ringtone: boolean;
+  snoozeMinutes: number;
+  greetFirst: boolean;
+}
+
+const INVITE_PREF_DEFAULTS: InvitePrefs = {
+  incomingCalls: true,
+  ringtone: true,
+  snoozeMinutes: DEFAULT_SNOOZE_MINUTES,
+  greetFirst: true,
+};
+
+function useInvitePrefs(): { prefs: InvitePrefs; loaded: boolean } {
+  const rpc = useRpc<typeof rpcContract>();
+  const [prefs, setPrefs] = useState<InvitePrefs | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const refetch = useCallback(() => {
+    rpc.call("getConfig", null).then(
+      // Per-field coercion, not a blind spread: an older server answers
+      // without these fields, and a failure must never yield undefined prefs.
+      (raw: unknown) => {
+        const config = (raw ?? {}) as Partial<InvitePrefs>;
+        setPrefs({
+          incomingCalls: typeof config.incomingCalls === "boolean" ? config.incomingCalls : true,
+          ringtone: typeof config.ringtone === "boolean" ? config.ringtone : true,
+          snoozeMinutes:
+            typeof config.snoozeMinutes === "number" && Number.isInteger(config.snoozeMinutes)
+              ? Math.min(Math.max(config.snoozeMinutes, 1), 120)
+              : DEFAULT_SNOOZE_MINUTES,
+          greetFirst: typeof config.greetFirst === "boolean" ? config.greetFirst : true,
+        });
+        setLoaded(true);
+      },
+      () => setLoaded(true), // backend unreachable: fail open on defaults
+    );
+  }, [rpc]);
+  useEffect(refetch, [refetch]);
+  useRealtime("config-changed", refetch);
+  return { prefs: prefs ?? INVITE_PREF_DEFAULTS, loaded };
 }
 
 /**
@@ -136,6 +189,7 @@ export function GlobalInviteOverlay() {
   const rpc = useRpc<typeof rpcContract>();
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
+  const { prefs, loaded: prefsLoaded } = useInvitePrefs();
   useRealtime(INVITE_CHANNEL, (payload) => inviteStore.ingestInvite(payload));
   useRealtime(INVITE_RESOLVED_CHANNEL, (payload) => {
     inviteStore.resolveInvite((payload as { inviteId?: unknown } | null)?.inviteId);
@@ -164,7 +218,13 @@ export function GlobalInviteOverlay() {
   // Accepting from a page with no voice UI of its own never strands the call
   // without controls. Cleared when the call ends.
   const [accepted, setAccepted] = useState<{ inviteId: string; title: string } | null>(null);
-  useRingtone(!!invite && !inCall && !mobile);
+  // prefsLoaded gates the ring (never ring on unconfirmed defaults when the
+  // user disabled calls), but never the live-call card: controls for a call
+  // you already accepted must not vanish on a slow backend.
+  const mayRing = prefsLoaded && prefs.incomingCalls;
+  const showInvite = !!invite && !inCall && mayRing;
+  const showLive = !!accepted && inCall;
+  useRingtone(showInvite && prefs.ringtone);
   useEffect(() => {
     // A call went live while this invite was still ringing here (started
     // manually mid-ring, or accepted on a surface whose resolve hasn't
@@ -182,7 +242,7 @@ export function GlobalInviteOverlay() {
     if (state === "idle") setAccepted(null);
   }, [state]);
   if (mobile) return null;
-  if (!invite && !(accepted && inCall)) return null;
+  if (!showInvite && !showLive) return null;
   const resolve = (action: "answered" | "dismissed") => {
     const id = invite?.inviteId ?? accepted?.inviteId;
     if (!id) return;
@@ -193,14 +253,15 @@ export function GlobalInviteOverlay() {
   const accept = () => {
     // Re-check at click time: a call may have started in the beat between
     // render and click, and acceptInvite would otherwise stop that live call.
-    if (!invite || voiceAgent.getState() !== "idle") {
+    if (!showInvite || !invite || voiceAgent.getState() !== "idle") {
       inviteStore.dismiss();
+      if (invite) toast.info("Already in a call — invite dismissed.");
       return;
     }
     setAccepted({ inviteId: invite.inviteId, title: invite.title });
     inviteStore.dismiss();
     resolve("answered");
-    voiceAgent.acceptInvite(invite.title, invite.briefing);
+    voiceAgent.acceptInvite(invite.title, invite.briefing, { greet: prefs.greetFirst });
   };
   const dismiss = () => {
     inviteStore.dismiss();
@@ -218,8 +279,8 @@ export function GlobalInviteOverlay() {
         "rounded-xl border border-primary/40 bg-card p-3.5 shadow-xl",
       )}
     >
-      {invite && !inCall ? (
-        <InviteBody onAccept={accept} onDismiss={dismiss} />
+      {showInvite && invite ? (
+        <InviteBody onAccept={accept} onDismiss={dismiss} snoozeMinutes={prefs.snoozeMinutes} />
       ) : (
         <div className="w-full">
           <div className="flex items-center gap-2">

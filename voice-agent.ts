@@ -194,7 +194,7 @@ export class VoiceAgent {
    * the data channel opens so Aide greets first with the call's reason.
    * Cleared by stop() — a call that never goes live owes no greeting.
    */
-  private pendingInviteGreeting: { title: string; briefing: string } | null = null;
+  private pendingInviteGreeting: { title: string; briefing: string; greet: boolean } | null = null;
   // ---- thread-event notifications (see server: `notifications` setting) ----
   /** Pending thread events, deduped per thread; latest state wins. */
   private pendingNotices = new Map<string, ThreadEventNotice>();
@@ -531,13 +531,15 @@ export class VoiceAgent {
   /**
    * Accept an incoming call invite: starts like toggleFromSurface, but carries
    * the call's reason along so Aide speaks first on open (see greetIfInvited)
-   * instead of waiting for the user.
+   * instead of waiting for the user. Pass `{ greet: false }` (the "Aide
+   * speaks first" setting off) to start a normal session that waits for the
+   * user instead.
    */
-  acceptInvite(title: string, briefing: string) {
+  acceptInvite(title: string, briefing: string, opts?: { greet?: boolean }) {
     if (this.hasLocalCall()) return this.toggle();
     const remote = this.remotePresenceLive();
     if (remote) return this.stopRemote(remote.nonce);
-    this.pendingInviteGreeting = { title, briefing };
+    this.pendingInviteGreeting = { title, briefing, greet: opts?.greet ?? true };
     void this.start();
   }
 
@@ -928,15 +930,16 @@ export class VoiceAgent {
   }
 
   /**
-   * If this call was accepted from an incoming invite, Aide speaks first:
-   * the call's reason goes in as a system instruction and a response is
-   * requested immediately, instead of waiting for the user to talk. Consumed
-   * once — a later reconnect in the same session must not re-greet.
+   * If this call was accepted from an incoming invite (and greeting is on),
+   * Aide speaks first: the call's reason goes in as a system instruction and
+   * a response is requested immediately, instead of waiting for the user to
+   * talk. Consumed once — a later reconnect in the same session must not
+   * re-greet.
    */
   private greetIfInvited(dc: RTCDataChannel) {
     const invite = this.pendingInviteGreeting;
     this.pendingInviteGreeting = null;
-    if (!invite || dc.readyState !== "open") return;
+    if (!invite || !invite.greet || dc.readyState !== "open") return;
     const reason = invite.briefing ? ` — ${invite.briefing}` : "";
     this.log("invite.greet", { title: invite.title });
     dc.send(
