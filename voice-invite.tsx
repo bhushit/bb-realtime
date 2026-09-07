@@ -93,6 +93,7 @@ function InviteBody({ onAccept, onDismiss }: { onAccept: () => void; onDismiss: 
         <button
           type="button"
           onClick={onAccept}
+          autoFocus
           className="flex-1 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
         >
           Accept
@@ -165,8 +166,18 @@ export function GlobalInviteOverlay() {
   const [accepted, setAccepted] = useState<{ inviteId: string; title: string } | null>(null);
   useRingtone(!!invite && !inCall && !mobile);
   useEffect(() => {
-    if (invite && inCall) inviteStore.dismiss();
-  }, [invite, inCall]);
+    // A call went live while this invite was still ringing here (started
+    // manually mid-ring, or accepted on a surface whose resolve hasn't
+    // arrived yet): stand down locally and tell the rest to do the same.
+    // The normal accept path already dismissed + resolved, so this is a no-op
+    // there (invite is null by the time the call goes live).
+    if (invite && inCall) {
+      inviteStore.dismiss();
+      void rpc
+        .call("resolveInvite", { inviteId: invite.inviteId, action: "dismissed" })
+        .catch(() => undefined);
+    }
+  }, [invite, inCall, rpc]);
   useEffect(() => {
     if (state === "idle") setAccepted(null);
   }, [state]);
@@ -180,7 +191,12 @@ export function GlobalInviteOverlay() {
       .catch(() => undefined);
   };
   const accept = () => {
-    if (!invite) return;
+    // Re-check at click time: a call may have started in the beat between
+    // render and click, and acceptInvite would otherwise stop that live call.
+    if (!invite || voiceAgent.getState() !== "idle") {
+      inviteStore.dismiss();
+      return;
+    }
     setAccepted({ inviteId: invite.inviteId, title: invite.title });
     inviteStore.dismiss();
     resolve("answered");
@@ -194,6 +210,9 @@ export function GlobalInviteOverlay() {
     <div
       role="alertdialog"
       aria-label={invite ? `Incoming call: ${invite.title}` : `On call: ${accepted?.title ?? "Aide"}`}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") dismiss();
+      }}
       className={cn(
         "fixed right-4 top-4 z-50 w-80 max-w-[calc(100vw-2rem)]",
         "rounded-xl border border-primary/40 bg-card p-3.5 shadow-xl",

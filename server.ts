@@ -21,6 +21,7 @@ import {
 } from "./models";
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
+import { INVITE_CHANNEL, INVITE_RESOLVED_CHANNEL } from "./voice-invite.ts";
 
 /**
  * Rebindable keyboard shortcuts (see shortcuts.ts): each value is a
@@ -1098,7 +1099,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb handsfree stop" },
       { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb handsfree mute" },
       { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb handsfree unmute" },
-      { name: "ring", summary: "Ring every connected bb window with an incoming voice-call invite (Tier-0 autonomous invocation).", usage: 'bb handsfree ring [--title "..."] [--briefing "..."] [--ttl 60]' },
+      { name: "ring", summary: "Ring every connected bb window with an incoming voice-call invite (Tier-0 autonomous invocation).", usage: 'bb handsfree ring [--title "..."] [--briefing "..."] [--ttl 60] [--no-banner]' },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
@@ -1112,6 +1113,7 @@ export default async function plugin(bb: BbPluginApi) {
         "  bb handsfree stop                     stop any active voice session",
         "  bb handsfree mute | unmute            mute/unmute the active session's mic",
         '  bb handsfree ring [--title "..."]     ring every window with an incoming-call invite',
+        '    --briefing "..." --ttl 60 --no-banner',
       ].join("\n");
       try {
         if (command === undefined || command === "help" || command === "--help" || command === "-h") {
@@ -1151,7 +1153,22 @@ export default async function plugin(bb: BbPluginApi) {
             createdAt: now,
             expiresAt: now + ttlSec * 1000,
           };
-          bb.realtime.publish("voice-invite", invite);
+          bb.realtime.publish(INVITE_CHANNEL, invite);
+          if (!rest.includes("--no-banner")) {
+            // Native OS banner (macOS Notification Center included) via the
+            // push plugin's global "notification" listener: reaches
+            // backgrounded tabs and the desktop app, where our overlay can't
+            // be seen. Needs Notification permission on that client; mobile
+            // webviews ignore this channel (Expo path instead — see HF-12).
+            // Clicking focuses BB; threadId null means no navigation.
+            bb.realtime.publish("notification", {
+              id: invite.inviteId,
+              title: `Aide calling: ${invite.title}`.slice(0, 80),
+              body: (invite.briefing || "Accept the call in BB to talk.").slice(0, 180),
+              threadId: null,
+              channels: ["web", "desktop"],
+            });
+          }
           return { exitCode: 0, stdout: `Ringing all bb windows: "${invite.title}" (${invite.inviteId}, expires in ${ttlSec}s).` };
         }
         if (command === "live") {
@@ -1395,7 +1412,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     async resolveInvite({ inviteId, action }) {
-      bb.realtime.publish("voice-invite-resolved", { inviteId, action });
+      bb.realtime.publish(INVITE_RESOLVED_CHANNEL, { inviteId, action });
       return { ok: true as const };
     },
     async listSessions(input) {

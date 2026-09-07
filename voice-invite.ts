@@ -82,6 +82,7 @@ export const inviteStore = {
     if (typeof title !== "string" || !title) return false;
     if (typeof expiresAt !== "number" || expiresAt <= Date.now()) return false;
     clearSnooze();
+    snoozed = null; // a new ring replaces any pending re-ring, not just its timer
     current = {
       inviteId,
       title,
@@ -154,5 +155,6 @@ export const inviteStore = {
     clearSnooze();
     current = null;
     snoozed = null;
+    emit();
   },
 };
