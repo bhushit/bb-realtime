@@ -270,7 +270,16 @@ export function GlobalInviteOverlay() {
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
   const { prefs, loaded: prefsLoaded } = useInvitePrefs();
-  useRealtime(INVITE_CHANNEL, (payload) => inviteStore.ingestInvite(payload));
+  // TEMP-DEBUG: remote visibility into overlay lifecycle. Removed before merge.
+  const diag = (kind: string, payload: Record<string, unknown> = {}) => {
+    void rpc.call("logEvent", { sessionId: "invite-diag", kind, payload }).catch(() => undefined);
+  };
+  useEffect(() => {
+    diag("overlay.mounted", { mobile: clientDescriptor.mobile });
+  }, []);
+  useRealtime(INVITE_CHANNEL, (payload) => {
+    diag("invite.received", { ok: inviteStore.ingestInvite(payload) });
+  });
   useRealtime(INVITE_RESOLVED_CHANNEL, (payload) => {
     inviteStore.resolveInvite((payload as { inviteId?: unknown } | null)?.inviteId);
   });
@@ -308,6 +317,19 @@ export function GlobalInviteOverlay() {
   const mayRing = prefsLoaded && prefs.incomingCalls;
   const showInvite = !!invite && !inCall && mayRing;
   const showLive = !!accepted && inCall;
+  // TEMP-DEBUG: reports why a received invite isn't rendering.
+  useEffect(() => {
+    if (invite) {
+      diag("invite.gated", {
+        inviteId: invite.inviteId,
+        inCall,
+        prefsLoaded,
+        incomingCalls: prefs.incomingCalls,
+        mobile,
+        showInvite,
+      });
+    }
+  }, [invite, inCall, prefsLoaded]);
   useRingtone(showInvite && prefs.ringtone);
   useEffect(() => {
     // A call went live while this invite was still ringing here (started
@@ -330,8 +352,10 @@ export function GlobalInviteOverlay() {
   }, [state]);
   // Hooks below run on EVERY render: useCallElapsed must stay above the early
   // returns, or React (fewer-hooks-than-expected) unmounts the overlay and
-  // nothing rings anywhere — the overlay is the only ringer.
+  // nothing rings anywhere — the overlay is the only ringer. Same for
+  // useOverlayPos: its state refs must mount on the very first render.
   const elapsed = useCallElapsed();
+  const { offset, dragHandleProps, chipHandleProps, clickAllowed } = useOverlayPos();
   const muted = state === "muted";
   if (mobile) return null;
   if (!showInvite && !showLive) return null;
@@ -360,7 +384,6 @@ export function GlobalInviteOverlay() {
     inviteStore.dismiss();
     resolve("dismissed");
   };
-  const { offset, dragHandleProps, chipHandleProps, clickAllowed } = useOverlayPos();
   // Inline z-index (not a class): side panels and drawers have beaten the
   // themed z-50 scale before, and a ringing phone must win stacking fights.
   const frameStyle = { top: 16, right: 16, transform: `translate(${offset.x}px, ${offset.y}px)`, zIndex: 100 } as const;
