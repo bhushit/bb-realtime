@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
-import { LiveCallControls } from "./voice-chrome";
+import { LiveCallControls, useCallElapsed } from "./voice-chrome";
 import {
   DEFAULT_SNOOZE_MINUTES,
   INVITE_CHANNEL,
@@ -218,6 +218,10 @@ export function GlobalInviteOverlay() {
   // Accepting from a page with no voice UI of its own never strands the call
   // without controls. Cleared when the call ends.
   const [accepted, setAccepted] = useState<{ inviteId: string; title: string } | null>(null);
+  // Mini-chip policy (option C): after Accept this surface keeps only a small
+  // floating chip (presence + elapsed); tap to expand full controls. Quiet
+  // next to the composer pill and console, sufficient where nothing else is.
+  const [expanded, setExpanded] = useState(false);
   // prefsLoaded gates the ring (never ring on unconfirmed defaults when the
   // user disabled calls), but never the live-call card: controls for a call
   // you already accepted must not vanish on a slow backend.
@@ -239,7 +243,10 @@ export function GlobalInviteOverlay() {
     }
   }, [invite, inCall, rpc]);
   useEffect(() => {
-    if (state === "idle") setAccepted(null);
+    if (state === "idle") {
+      setAccepted(null);
+      setExpanded(false);
+    }
   }, [state]);
   if (mobile) return null;
   if (!showInvite && !showLive) return null;
@@ -259,6 +266,7 @@ export function GlobalInviteOverlay() {
       return;
     }
     setAccepted({ inviteId: invite.inviteId, title: invite.title });
+    setExpanded(false); // start as a chip; tap to expand
     inviteStore.dismiss();
     resolve("answered");
     voiceAgent.acceptInvite(invite.title, invite.briefing, { greet: prefs.greetFirst });
@@ -267,12 +275,34 @@ export function GlobalInviteOverlay() {
     inviteStore.dismiss();
     resolve("dismissed");
   };
+  const elapsed = useCallElapsed();
+  const muted = state === "muted";
+  if (!showInvite && showLive && !expanded) {
+    return (
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        title={accepted?.title ? `On call — ${accepted.title}. Show controls.` : "On call. Show controls."}
+        aria-label={accepted?.title ? `On call — ${accepted.title}. Show controls.` : "On call. Show controls."}
+        className={cn(
+          "fixed right-4 top-4 z-50 flex items-center gap-1.5",
+          "rounded-full border border-primary/40 bg-card px-3 py-1.5 shadow-xl",
+          "text-xs tabular-nums text-muted-foreground transition-colors hover:text-foreground",
+          muted && "border-destructive/50 text-destructive hover:text-destructive",
+        )}
+      >
+        <span className={cn("size-2 rounded-full", muted ? "bg-destructive" : "bg-primary animate-pulse")} aria-hidden />
+        {muted ? "Muted" : "On call"}
+        {elapsed ? ` · ${elapsed}` : null}
+      </button>
+    );
+  }
   return (
     <div
       role="alertdialog"
-      aria-label={invite ? `Incoming call: ${invite.title}` : `On call: ${accepted?.title ?? "Aide"}`}
+      aria-label={showInvite && invite ? `Incoming call: ${invite.title}` : `On call: ${accepted?.title ?? "Aide"}`}
       onKeyDown={(event) => {
-        if (event.key === "Escape") dismiss();
+        if (event.key === "Escape" && showInvite) dismiss();
       }}
       className={cn(
         "fixed right-4 top-4 z-50 w-80 max-w-[calc(100vw-2rem)]",
@@ -288,6 +318,17 @@ export function GlobalInviteOverlay() {
             <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
               On call{accepted?.title ? ` — ${accepted.title}` : ""}
             </span>
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              aria-label="Minimize call controls"
+              title="Minimize"
+              className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <svg viewBox="0 0 16 16" className="size-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden>
+                <path d="M4 10l4-4 4 4" />
+              </svg>
+            </button>
           </div>
           <div className="mt-2.5 flex justify-center">
             <LiveCallControls />
