@@ -2,7 +2,7 @@
 // `voice-invite` with Accept / Snooze / Dismiss. Accept starts a normal voice
 // session (the click is the user gesture mic + playback need); snooze re-rings
 // locally after N minutes; dismiss or expiry just goes quiet.
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   experimental_useSidebarThreadActions,
   useBbContext,
@@ -12,6 +12,7 @@ import {
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
+import { LiveCallControls } from "./voice-chrome";
 import {
   DEFAULT_SNOOZE_MINUTES,
   INVITE_CHANNEL,
@@ -158,17 +159,29 @@ export function GlobalInviteOverlay() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const inCall = state !== "idle";
   const mobile = clientDescriptor.mobile;
+  // The surface that accepted keeps a live-call card (mute/stop + status) so
+  // Accepting from a page with no voice UI of its own never strands the call
+  // without controls. Cleared when the call ends.
+  const [accepted, setAccepted] = useState<{ inviteId: string; title: string } | null>(null);
   useRingtone(!!invite && !inCall && !mobile);
   useEffect(() => {
     if (invite && inCall) inviteStore.dismiss();
   }, [invite, inCall]);
-  if (mobile || !invite || inCall) return null;
+  useEffect(() => {
+    if (state === "idle") setAccepted(null);
+  }, [state]);
+  if (mobile) return null;
+  if (!invite && !(accepted && inCall)) return null;
   const resolve = (action: "answered" | "dismissed") => {
+    const id = invite?.inviteId ?? accepted?.inviteId;
+    if (!id) return;
     void rpc
-      .call("resolveInvite", { inviteId: invite.inviteId, action })
+      .call("resolveInvite", { inviteId: id, action })
       .catch(() => undefined);
   };
   const accept = () => {
+    if (!invite) return;
+    setAccepted({ inviteId: invite.inviteId, title: invite.title });
     inviteStore.dismiss();
     resolve("answered");
     voiceAgent.acceptInvite(invite.title, invite.briefing);
@@ -180,13 +193,27 @@ export function GlobalInviteOverlay() {
   return (
     <div
       role="alertdialog"
-      aria-label={`Incoming call: ${invite.title}`}
+      aria-label={invite ? `Incoming call: ${invite.title}` : `On call: ${accepted?.title ?? "Aide"}`}
       className={cn(
         "fixed right-4 top-4 z-50 w-80 max-w-[calc(100vw-2rem)]",
         "rounded-xl border border-primary/40 bg-card p-3.5 shadow-xl",
       )}
     >
-      <InviteBody onAccept={accept} onDismiss={dismiss} />
+      {invite && !inCall ? (
+        <InviteBody onAccept={accept} onDismiss={dismiss} />
+      ) : (
+        <div className="w-full">
+          <div className="flex items-center gap-2">
+            <span className="size-2.5 shrink-0 rounded-full bg-primary" aria-hidden />
+            <span className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              On call{accepted?.title ? ` — ${accepted.title}` : ""}
+            </span>
+          </div>
+          <div className="mt-2.5 flex justify-center">
+            <LiveCallControls />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
