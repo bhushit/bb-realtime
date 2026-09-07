@@ -248,6 +248,11 @@ export function GlobalInviteOverlay() {
       setExpanded(false);
     }
   }, [state]);
+  // Hooks below run on EVERY render: useCallElapsed must stay above the early
+  // returns, or React (fewer-hooks-than-expected) unmounts the overlay and
+  // nothing rings anywhere — the overlay is the only ringer.
+  const elapsed = useCallElapsed();
+  const muted = state === "muted";
   if (mobile) return null;
   if (!showInvite && !showLive) return null;
   const resolve = (action: "answered" | "dismissed") => {
@@ -275,8 +280,6 @@ export function GlobalInviteOverlay() {
     inviteStore.dismiss();
     resolve("dismissed");
   };
-  const elapsed = useCallElapsed();
-  const muted = state === "muted";
   if (!showInvite && showLive && !expanded) {
     return (
       <button
