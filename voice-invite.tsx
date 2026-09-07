@@ -3,9 +3,21 @@
 // session (the click is the user gesture mic + playback need); snooze re-rings
 // locally after N minutes; dismiss or expiry just goes quiet.
 import { useEffect, useSyncExternalStore } from "react";
-import { useRealtime } from "@get-bb/plugin-sdk/app";
+import {
+  experimental_useSidebarThreadActions,
+  useBbContext,
+  useRealtime,
+  useRpc,
+} from "@get-bb/plugin-sdk/app";
+import type { rpcContract } from "./server";
+import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
-import { DEFAULT_SNOOZE_MINUTES, INVITE_CHANNEL, inviteStore } from "./voice-invite.ts";
+import {
+  DEFAULT_SNOOZE_MINUTES,
+  INVITE_CHANNEL,
+  INVITE_RESOLVED_CHANNEL,
+  inviteStore,
+} from "./voice-invite.ts";
 import { cn } from "@/lib/utils";
 
 /** Double-beep ringtone while an invite is ringing. Best-effort: before the
@@ -61,8 +73,7 @@ function useRingtone(ringing: boolean) {
     };
   }, [ringing]);
 }
-
-function InviteBody({ onAccept }: { onAccept: () => void }) {
+function InviteBody({ onAccept, onDismiss }: { onAccept: () => void; onDismiss: () => void }) {
   const invite = useSyncExternalStore(inviteStore.subscribe, inviteStore.getSnapshot);
   if (!invite) return null;
   return (
@@ -95,7 +106,7 @@ function InviteBody({ onAccept }: { onAccept: () => void }) {
         </button>
         <button
           type="button"
-          onClick={() => inviteStore.dismiss()}
+          onClick={onDismiss}
           aria-label="Dismiss invite"
           title="Dismiss"
           className="rounded-full border border-border px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
@@ -106,26 +117,65 @@ function InviteBody({ onAccept }: { onAccept: () => void }) {
     </div>
   );
 }
+
 /**
  * App-wide incoming-call overlay (registered as `experimental_appOverlay`, so
  * it mounts on every page — thread views, the Handsfree page, settings, other
  * plugins' pages). Top-right toast placement keeps it clear of the composer.
  * While already in a call the invite is moot, so it steps aside (and drops
  * the invite — whoever is talking already has the floor).
+ *
+ * Answering/dismissing here resolves through the server, so every other
+ * surface stops ringing too; snooze stays local to this surface by design.
+ * Mobile stays silent for now: the native webview cannot reliably start a
+ * call (see HF-2), and the phone path waits on Expo push (HF-12).
  */
 export function GlobalInviteOverlay() {
+  const rpc = useRpc<typeof rpcContract>();
+  const { threadId, projectId } = useBbContext();
+  const sidebarActions = experimental_useSidebarThreadActions();
   useRealtime(INVITE_CHANNEL, (payload) => inviteStore.ingestInvite(payload));
+  useRealtime(INVITE_RESOLVED_CHANNEL, (payload) => {
+    inviteStore.resolveInvite((payload as { inviteId?: unknown } | null)?.inviteId);
+  });
+
+  // Fallback voice binding so Accept can start a call from pages with no
+  // composer of their own. Thread views keep their richer composer binding —
+  // fallbacks never win over those (see registerBindings).
+  useEffect(() => {
+    return voiceAgent.bindFallback({
+      rpc,
+      context: { threadId: threadId ?? null, projectId: projectId ?? null, onNewThreadScreen: false },
+      openNewThread: (targetProjectId) =>
+        sidebarActions.openNewThread({
+          ...(targetProjectId ? { projectId: targetProjectId } : {}),
+          focusPrompt: true,
+        }),
+    });
+  }, [rpc, threadId, projectId, sidebarActions]);
+
   const invite = useSyncExternalStore(inviteStore.subscribe, inviteStore.getSnapshot);
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const inCall = state !== "idle";
-  useRingtone(!!invite && !inCall);
+  const mobile = clientDescriptor.mobile;
+  useRingtone(!!invite && !inCall && !mobile);
   useEffect(() => {
     if (invite && inCall) inviteStore.dismiss();
   }, [invite, inCall]);
-  if (!invite || inCall) return null;
+  if (mobile || !invite || inCall) return null;
+  const resolve = (action: "answered" | "dismissed") => {
+    void rpc
+      .call("resolveInvite", { inviteId: invite.inviteId, action })
+      .catch(() => undefined);
+  };
   const accept = () => {
     inviteStore.dismiss();
+    resolve("answered");
     voiceAgent.acceptInvite(invite.title, invite.briefing);
+  };
+  const dismiss = () => {
+    inviteStore.dismiss();
+    resolve("dismissed");
   };
   return (
     <div
@@ -136,7 +186,7 @@ export function GlobalInviteOverlay() {
         "rounded-xl border border-primary/40 bg-card p-3.5 shadow-xl",
       )}
     >
-      <InviteBody onAccept={accept} />
+      <InviteBody onAccept={accept} onDismiss={dismiss} />
     </div>
   );
 }

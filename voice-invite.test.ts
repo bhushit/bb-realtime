@@ -61,3 +61,26 @@ test("snooze hides the invite and rings again shortly after", async () => {
     inviteStore.reset();
   }
 });
+
+test("resolveInvite drops only the matching invite, including a snoozed one", async () => {
+  const ringing = () => inviteStore.getSnapshot()?.inviteId ?? null;
+  try {
+    assert.equal(inviteStore.ingestInvite(invite({ inviteId: "inv-a" })), true);
+    assert.equal(inviteStore.resolveInvite("inv-other"), false);
+    assert.equal(ringing(), "inv-a");
+    inviteStore.snooze(0.001); // ~60ms; re-ring pending
+    assert.equal(ringing(), null);
+    // Answered elsewhere while snoozed: the re-ring must never arrive.
+    assert.equal(inviteStore.resolveInvite("inv-a"), true);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(ringing(), null);
+    // A newer ring after the resolve is unaffected.
+    assert.equal(inviteStore.ingestInvite(invite({ inviteId: "inv-b" })), true);
+    assert.equal(inviteStore.resolveInvite("inv-a"), false);
+    assert.equal(ringing(), "inv-b");
+    assert.equal(inviteStore.resolveInvite("inv-b"), true);
+    assert.equal(ringing(), null);
+  } finally {
+    inviteStore.reset();
+  }
+});

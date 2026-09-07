@@ -266,6 +266,16 @@ export const rpcContract = defineRpcContract({
     input: z.object({ nonce: z.string().min(1) }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  /**
+   * Resolve an incoming-call invite from any surface: the server rebroadcasts
+   * so every other surface stops ringing it (frontends are subscribe-only and
+   * cannot tell each other directly). Answering also releases the other
+   * surfaces; snooze stays local by design and needs no call here.
+   */
+  resolveInvite: {
+    input: z.object({ inviteId: z.string().min(1), action: z.enum(["answered", "dismissed"]) }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
   /** List voice sessions, newest first, with counts and estimated cost. */
   listSessions: {
     input: z.object({ offset: z.number().int().min(0) }).strict().nullable(),
@@ -1382,6 +1392,10 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("voice-presence", { nonce, phase: "idle", startedAt: null });
       bb.realtime.publish("voice-command", { nonce, action: "stop" });
       bb.realtime.publish("aide-log", { sessionId: nonce });
+      return { ok: true as const };
+    },
+    async resolveInvite({ inviteId, action }) {
+      bb.realtime.publish("voice-invite-resolved", { inviteId, action });
       return { ok: true as const };
     },
     async listSessions(input) {

@@ -91,8 +91,7 @@ test("mobile settings never replace desktop navigation and migrate the prototype
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("ring broadcasts an incoming-call invite to every window", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+test("ring broadcasts an incoming-call invite to every window", async () => {  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
   try {
     await plugin(bb);
     const result = await harness.behavior.runCli(["ring", "--title", "Morning brief", "--ttl", "45"]);
@@ -104,6 +103,19 @@ test("ring broadcasts an incoming-call invite to every window", async () => {
     assert.equal(payload.title, "Morning brief");
     assert.match(String(payload.inviteId), /^inv-/);
     assert.ok((payload.expiresAt as number) > (payload.createdAt as number));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("resolveInvite rebroadcasts answers and dismissals to every window", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.callRpc("resolveInvite", { inviteId: "inv-1", action: "answered" });
+    assert.deepEqual(result, { ok: true });
+    const signal = harness.inspection.realtimeSignals.find((s) => s.channel === "voice-invite-resolved");
+    assert.deepEqual(signal?.payload, { inviteId: "inv-1", action: "answered" });
+    await assert.rejects(harness.behavior.callRpc("resolveInvite", { inviteId: "", action: "answered" }));
+    await assert.rejects(harness.behavior.callRpc("resolveInvite", { inviteId: "inv-1", action: "maybe" }));
   } finally { await harness.lifecycle.dispose(); }
 });
 

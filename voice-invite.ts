@@ -16,12 +16,16 @@ export interface VoiceInvite {
 }
 
 export const INVITE_CHANNEL = "voice-invite";
+/** Broadcast when any surface answers/dismisses; all others drop the invite. */
+export const INVITE_RESOLVED_CHANNEL = "voice-invite-resolved";
 /** How long a re-shown (snoozed) invite rings before expiring on its own. */
 export const RESHOW_TTL_MS = 60_000;
 export const DEFAULT_SNOOZE_MINUTES = 10;
 
 const listeners = new Set<() => void>();
 let current: VoiceInvite | null = null;
+/** Snoozed invite waiting to re-ring; cancelled if another surface resolves it. */
+let snoozed: VoiceInvite | null = null;
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 let snoozeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -93,27 +97,55 @@ export const inviteStore = {
   dismiss() {
     clearExpiry();
     clearSnooze();
+    snoozed = null;
     if (current === null) return;
     current = null;
     emit();
   },
 
-  /** Hide now, ring again in `minutes`. A pending snooze replaces any other. */
+  /** Hide now, ring again in `minutes`. Snooze is local to this surface; an
+   * answer/dismiss from anywhere (see resolveInvite) still wins everywhere. */
   snooze(minutes: number = DEFAULT_SNOOZE_MINUTES) {
     const invite = current;
     if (!invite) return;
     clearExpiry();
     clearSnooze();
     current = null;
+    snoozed = invite;
     emit();
     const delayMs = Math.max(0, minutes) * 60_000;
     snoozeTimer = setTimeout(() => {
       snoozeTimer = null;
-      if (current) return; // a newer invite arrived while snoozed — keep it
-      current = { ...invite, expiresAt: Math.max(invite.expiresAt, Date.now() + RESHOW_TTL_MS) };
+      const pending = snoozed;
+      snoozed = null;
+      if (!pending || current) return; // resolved elsewhere, or a newer invite arrived
+      current = { ...pending, expiresAt: Math.max(pending.expiresAt, Date.now() + RESHOW_TTL_MS) };
       armExpiry();
       emit();
     }, delayMs);
+  },
+
+  /**
+   * Drop an invite answered/dismissed on any surface (via the server's
+   * `voice-invite-resolved` broadcast). Only the matching invite is
+   * affected — a newer ring is never collateral. Returns true when
+   * something was actually cleared.
+   */
+  resolveInvite(inviteId: unknown): boolean {
+    if (typeof inviteId !== "string" || !inviteId) return false;
+    let changed = false;
+    if (current?.inviteId === inviteId) {
+      clearExpiry();
+      current = null;
+      changed = true;
+    }
+    if (snoozed?.inviteId === inviteId) {
+      clearSnooze();
+      snoozed = null;
+      changed = true;
+    }
+    if (changed) emit();
+    return changed;
   },
 
   /** Test-only: drop all state and timers. */
@@ -121,5 +153,6 @@ export const inviteStore = {
     clearExpiry();
     clearSnooze();
     current = null;
+    snoozed = null;
   },
 };
