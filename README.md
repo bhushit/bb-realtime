@@ -94,7 +94,7 @@ bb handsfree read thr_xxxxx  # a thread's status + latest assistant output
 bb handsfree usage           # what your voice sessions cost, per day (estimated)
 bb handsfree stop            # stop an active voice session in any bb window
 bb handsfree ring --title "Morning brief" --briefing "Plan the day"  # ring every window with an incoming-call invite
-                             # flags: --ttl 60 (10-600s), --no-banner (skip the native OS banner)
+                             # flags: --ttl 60 (10-600s), --banner (native OS banner, opt-in)
                                # add --ttl 60, or --no-banner to skip the native OS banner
 ```
 

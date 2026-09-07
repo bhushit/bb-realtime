@@ -1128,7 +1128,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb handsfree stop" },
       { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb handsfree mute" },
       { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb handsfree unmute" },
-      { name: "ring", summary: "Ring every connected bb window with an incoming voice-call invite (Tier-0 autonomous invocation).", usage: 'bb handsfree ring [--title "..."] [--briefing "..."] [--ttl 60] [--no-banner]' },
+      { name: "ring", summary: "Ring every connected bb window with an incoming voice-call invite (Tier-0 autonomous invocation).", usage: 'bb handsfree ring [--title "..."] [--briefing "..."] [--ttl 60] [--banner]' },
     ],
     async run(argv) {
       const [command, ...rest] = argv;
@@ -1142,7 +1142,7 @@ export default async function plugin(bb: BbPluginApi) {
         "  bb handsfree stop                     stop any active voice session",
         "  bb handsfree mute | unmute            mute/unmute the active session's mic",
         '  bb handsfree ring [--title "..."]     ring every window with an incoming-call invite',
-        '    --briefing "..." --ttl 60 --no-banner',
+        '    --briefing "..." --ttl 60 --banner (native OS banner, opt-in while flaky)',
       ].join("\n");
       try {
         if (command === undefined || command === "help" || command === "--help" || command === "-h") {
@@ -1187,7 +1187,11 @@ export default async function plugin(bb: BbPluginApi) {
             expiresAt: now + ttlSec * 1000,
           };
           bb.realtime.publish(INVITE_CHANNEL, invite);
-          if (ringtone && !rest.includes("--no-banner")) {
+          bb.log.info(`voice-invite published: ${invite.inviteId} "${invite.title}"`);
+          // Native banner is opt-in while unreliable (see PR #32): valid
+          // publishes on the push plugin's channel repeatedly never display,
+          // though identical test/thread banners do. Toast is the default.
+          if (ringtone && rest.includes("--banner")) {
             // Native OS banner (macOS Notification Center included) via the
             // push plugin's global "notification" listener: reaches
             // backgrounded tabs and the desktop app, where our overlay can't
@@ -1201,6 +1205,7 @@ export default async function plugin(bb: BbPluginApi) {
               threadId: null,
               channels: ["web", "desktop"],
             });
+            bb.log.info(`invite banner published: ${invite.inviteId}`);
           }
           return { exitCode: 0, stdout: `Ringing all bb windows: "${invite.title}" (${invite.inviteId}, expires in ${ttlSec}s).` };
         }

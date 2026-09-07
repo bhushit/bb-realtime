@@ -103,26 +103,26 @@ test("ring broadcasts an incoming-call invite to every window", async () => {  c
     assert.equal(payload.title, "Morning brief");
     assert.match(String(payload.inviteId), /^inv-/);
     assert.ok((payload.expiresAt as number) > (payload.createdAt as number));
-    // A native OS banner goes out alongside the in-app invite…
+    // Toast-only by default: no native banner without --banner.
+    assert.equal(harness.inspection.realtimeSignals.some((s) => s.channel === "notification"), false);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("ring --banner adds the native OS banner alongside the invite", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
+  try {
+    await plugin(bb);
+    const result = await harness.behavior.runCli(["ring", "--title", "Morning brief", "--banner"]);
+    assert.equal(result.exitCode, 0);
+    const invite = harness.inspection.realtimeSignals.find((s) => s.channel === "voice-invite");
     const banner = harness.inspection.realtimeSignals.find((s) => s.channel === "notification");
     assert.deepEqual(banner?.payload, {
-      id: payload.inviteId,
+      id: (invite?.payload as Record<string, unknown>)?.inviteId,
       title: "Aide calling: Morning brief",
       body: "Accept the call in BB to talk.",
       threadId: null,
       channels: ["web", "desktop"],
     });
-  } finally { await harness.lifecycle.dispose(); }
-});
-
-test("ring --no-banner skips the native OS banner", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "handsfree" });
-  try {
-    await plugin(bb);
-    const result = await harness.behavior.runCli(["ring", "--no-banner"]);
-    assert.equal(result.exitCode, 0);
-    assert.ok(harness.inspection.realtimeSignals.some((s) => s.channel === "voice-invite"));
-    assert.equal(harness.inspection.realtimeSignals.some((s) => s.channel === "notification"), false);
   } finally { await harness.lifecycle.dispose(); }
 });
 
